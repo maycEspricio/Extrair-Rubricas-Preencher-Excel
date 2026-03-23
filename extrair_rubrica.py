@@ -25,7 +25,6 @@ import time
 # Importa o módulo json para salvar os dados extraídos em arquivo .json
 import json
 
-
 def iniciar_driver():
     """
     Inicia o navegador Chrome com configurações personalizadas.
@@ -53,178 +52,204 @@ def iniciar_driver():
     # Retorna a instância do Chrome já configurada
     return webdriver.Chrome(options=options)
 
-
-def expandir_criterios(driver):
+def coletar_alunos_da_tabela(driver):
     """
-    Procura todos os botões de expandir critério na página e tenta clicar em cada um.
-
-    Isso é necessário porque alguns dados da rubrica podem estar ocultos
-    até que o critério seja expandido visualmente.
-
-    Parâmetros:
-        driver: instância ativa do Selenium WebDriver.
+    Lê a tabela de estudantes e retorna uma lista com nome e link
+    de cada aluno.
     """
+    alunos = []
 
-    # Busca todos os elementos que possuam aria-label="Expandir critério"
-    # usando seletor CSS.
-    botoes = driver.find_elements(By.CSS_SELECTOR, '[aria-label="Expandir critério"]')
+    # pega apenas linhas que realmente representam aluno
+    linhas = driver.find_elements(By.CSS_SELECTOR, 'tr[data-student-id]')
 
-    # Exibe quantos botões foram encontrados para depuração
-    print(f"Botões de expandir encontrados: {len(botoes)}")
+    print(f"Alunos encontrados na tabela: {len(linhas)}")
 
-    # Percorre todos os botões encontrados
-    for i, botao in enumerate(botoes, start=1):
+    for linha in linhas:
         try:
-            # Usa JavaScript para clicar no botão.
-            # Isso costuma funcionar melhor do que botao.click()
-            # em elementos que estão sobrepostos ou com problemas de interação.
-            driver.execute_script("arguments[0].click();", botao)
+            link = linha.find_element(By.CSS_SELECTOR, 'td.TAjiIf a[href*="/student/"]')
+            nome = linha.find_element(By.CSS_SELECTOR, 'span.YVvGBb').text.strip()
+            href = link.get_attribute("href")
 
-            # Mensagem de sucesso para acompanhamento da execução
-            print(f"Critério {i} expandido")
+            if nome and href:
+                alunos.append({
+                    "nome": nome,
+                    "href": href
+                })
 
         except Exception as e:
-            # Caso ocorra erro ao clicar, o sistema não interrompe o processo inteiro.
-            # Apenas registra o problema e continua com os demais botões.
-            print(f"Não consegui expandir o critério {i}: {e}")
+            print(f"Não consegui ler uma linha da tabela: {e}")
 
+    return alunos
 
-def copiar_rubrica(html: str):
+def esperar_rubrica_carregar(driver, timeout=20):
     """
-    Recebe o HTML completo da página e extrai os critérios e níveis selecionados da rubrica.
-
-    A função faz o parsing do HTML com BeautifulSoup e tenta identificar:
-    - o texto do critério
-    - o nível marcado para cada critério
-
-    Parâmetros:
-        html (str): código-fonte HTML da página.
-
-    Retorno:
-        list[dict]: lista de dicionários com:
-            - criterion_id
-            - criterio
-            - nivel
+    Aguarda a página do aluno carregar e diagnostica em qual etapa a rubrica falha.
     """
+    wait = WebDriverWait(driver, timeout)
 
-    # Cria o objeto BeautifulSoup para navegar e consultar o HTML
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+        print("Etapa 1 OK: document.readyState = complete")
+    except Exception as e:
+        print(f"Falha na etapa 1 (document.readyState): {e}")
+        return False
 
-    # Conjunto com os nomes dos níveis conhecidos da rubrica.
-    # Isso é usado para evitar confundir o texto de um nível com o texto do critério.
-    NIVEIS_CONHECIDOS = {
-        "Não satisfatório",
-        "Apoiado",
-        "Parcialmente Autônomo",
-        "Autônomo",
+    try:
+        wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '[data-criterion-id]')) > 0)
+        qtd_criterios = len(driver.find_elements(By.CSS_SELECTOR, '[data-criterion-id]'))
+        print(f"Etapa 2 OK: critérios encontrados = {qtd_criterios}")
+    except Exception as e:
+        print(f"Falha na etapa 2 (data-criterion-id): {e}")
+        return False
+
+    try:
+        wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '[role="menuitemradio"]')) > 0)
+        qtd_opcoes = len(driver.find_elements(By.CSS_SELECTOR, '[role="menuitemradio"]'))
+        print(f"Etapa 3 OK: opções de nível encontradas = {qtd_opcoes}")
+    except Exception as e:
+        print(f"Falha na etapa 3 (menuitemradio): {e}")
+        return False
+
+    print("Rubrica carregada com sucesso.")
+    return True
+
+def extrair_rubrica_do_aluno(driver, nome_aluno, href):
+    """
+    Abre a página do aluno, extrai a rubrica
+    e devolve um dicionário com os dados.
+    """
+    print(f"\nAbrindo aluno: {nome_aluno}")
+    driver.get(href)
+
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+        wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '[data-criterion-id]')) > 0)
+    except Exception as e:
+        print(f"Página do aluno carregou, mas os critérios não ficaram disponíveis: {e}")
+        return {
+            "aluno": nome_aluno,
+            "link": href,
+            "rubrica": [],
+            "observacao": "Critérios da rubrica não encontrados."
+        }
+
+    time.sleep(1)
+
+    # scroll leve para incentivar renderização
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.4);")
+    time.sleep(0.5)
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(0.5)
+
+    html = driver.page_source
+
+    print(f"HTML capturado com {len(html)} caracteres")
+    print(f"Quantidade de 'data-criterion-id' no HTML: {html.count('data-criterion-id')}")
+    print(f"Quantidade de 'menuitemradio' no HTML: {html.count('menuitemradio')}")
+    print(f"Quantidade de 'aria-checked=\"true\"' no HTML: {html.count('aria-checked=\"true\"')}")
+
+    rubrica = copiar_rubrica(driver)
+
+    return {
+        "aluno": nome_aluno,
+        "link": href,
+        "rubrica": rubrica
     }
 
-    # Procura todos os blocos que possuem o atributo data-criterion-id.
-    # Cada um desses blocos representa um critério da rubrica.
-    blocos_criterio = soup.find_all(attrs={"data-criterion-id": True})
+def copiar_rubrica(driver):
+    """
+    Extrai critérios e níveis diretamente do DOM usando a ligação
+    entre o botão do critério (aria-controls) e o painel de opções (id).
+    """
+    dados = driver.execute_script("""
+        const resultado = [];
+        const vistos = new Set();
 
-    # Dicionário usado para armazenar os critérios sem duplicação.
-    # A chave será o criterion_id.
-    criterios = {}
+        const blocos = Array.from(document.querySelectorAll('.stS1kf.Lzvjbf[data-criterion-id], [data-criterion-id]'));
 
-    # Percorre todos os blocos identificados como critério
-    for bloco in blocos_criterio:
+        for (const bloco of blocos) {
+            const criterionId = (bloco.getAttribute('data-criterion-id') || '').trim();
+            if (!criterionId || vistos.has(criterionId)) continue;
 
-        # Obtém o ID do critério e remove espaços extras
-        criterio_id = (bloco.get("data-criterion-id") or "").strip()
+            let criterio = 'Critério não encontrado';
 
-        # Se não houver ID, ignora o bloco, pois ele não pode ser identificado corretamente
-        if not criterio_id:
-            continue
+            // tenta achar o texto do critério dentro do bloco
+            const candidatosTitulo = Array.from(bloco.querySelectorAll('.K0lUWd'));
+            const tituloValido = candidatosTitulo
+                .map(el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim())
+                .find(t => t.length > 0);
 
-        # Cria a estrutura inicial do critério apenas se ele ainda não existir no dicionário.
-        # Isso evita duplicidade quando o mesmo criterion_id aparece mais de uma vez no HTML.
-        if criterio_id not in criterios:
-            criterios[criterio_id] = {
-                "criterion_id": criterio_id,
-                "criterio": "Critério não encontrado",
-                "nivel": "Nenhum nível marcado"
+            if (tituloValido) {
+                criterio = tituloValido;
             }
 
-        # ==========================================================
-        # 1) TENTATIVA DE IDENTIFICAR O TEXTO DO CRITÉRIO
-        # ==========================================================
-        #
-        # Aqui buscamos possíveis elementos que contenham o texto da descrição/pergunta
-        # do critério. Os seletores foram definidos com base na estrutura observada
-        # no HTML do Google Classroom.
-        #
-        # "span.NPEfkd div.K0lUWd" e "div.K0lUWd" são candidatos a conter o texto desejado.
-        candidatos = bloco.select("span.NPEfkd div.K0lUWd, div.K0lUWd")
+            // acha o botão do critério que aponta para o painel correto
+            let botaoControlador = Array.from(bloco.querySelectorAll('[aria-controls]'))
+                .find(el => (el.getAttribute('aria-controls') || '').trim().length > 0);
 
-        # Percorre os candidatos até encontrar um texto que pareça ser o critério
-        for tag in candidatos:
+            // fallback: procurar próximo do bloco
+            if (!botaoControlador && bloco.parentElement) {
+                botaoControlador = Array.from(bloco.parentElement.querySelectorAll('[aria-controls]'))
+                    .find(el => (el.getAttribute('aria-controls') || '').trim().length > 0);
+            }
 
-            # Extrai o texto do elemento, unindo possíveis quebras com espaço
-            texto = tag.get_text(" ", strip=True)
+            let nivel = 'Nenhum nível marcado';
+            let opcoes = [];
 
-            # Normaliza múltiplos espaços em branco para um único espaço
-            texto = " ".join(texto.split()).strip()
+            if (botaoControlador) {
+                const panelId = (botaoControlador.getAttribute('aria-controls') || '').trim();
+                if (panelId) {
+                    const painel = document.getElementById(panelId);
+                    if (painel) {
+                        opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"]'));
+                    }
+                }
+            }
 
-            # Regras para considerar esse texto como possível critério:
-            # - precisa existir
-            # - precisa ter mais de 15 caracteres (heurística para evitar textos curtos irrelevantes)
-            # - não pode ser igual a um dos níveis conhecidos
-            if (
-                texto
-                and len(texto) > 15
-                and texto not in NIVEIS_CONHECIDOS
-            ):
-                # Só substitui o valor padrão se ainda não encontrou
-                # um critério considerado válido antes
-                if criterios[criterio_id]["criterio"] == "Critério não encontrado":
-                    criterios[criterio_id]["criterio"] = texto
+            // fallback final: procura no contêiner visual mais próximo
+            if (opcoes.length === 0) {
+                const container = bloco.closest('.NBQ1Tb') || bloco.parentElement;
+                if (container) {
+                    opcoes = Array.from(container.querySelectorAll('[role="menuitemradio"]'));
+                }
+            }
 
-                # Encerra o loop ao encontrar o primeiro candidato aceitável
-                break
+            if (opcoes.length === 0) {
+                continue;
+            }
 
-        # ==========================================================
-        # 2) TENTATIVA DE IDENTIFICAR O NÍVEL MARCADO
-        # ==========================================================
-        #
-        # Cada opção de nível da rubrica costuma aparecer como um elemento
-        # com role="menuitemradio". Entre essas opções, procuramos a que está marcada.
-        opcoes = bloco.find_all(attrs={"role": "menuitemradio"})
+            let marcada = opcoes.find(el => (el.getAttribute('aria-checked') || '').toLowerCase() === 'true');
 
-        # Se encontrou opções, mostra informações para depuração
-        if opcoes:
-            print(f"\n[DEBUG] criterion_id={criterio_id}")
-            print(f"[DEBUG] opções encontradas: {len(opcoes)}")
+            if (!marcada) {
+                marcada = opcoes.find(el => el.classList.contains('KKjvXb'));
+            }
 
-        # Percorre cada opção disponível dentro do critério
-        for opcao in opcoes:
+            if (marcada) {
+                nivel =
+                    (marcada.getAttribute('aria-label') || '').trim() ||
+                    (marcada.innerText || marcada.textContent || '').replace(/\\s+/g, ' ').trim() ||
+                    'Nível sem rótulo';
+            }
 
-            # Verifica se a opção está marcada
-            aria_checked = opcao.get("aria-checked")
+            vistos.add(criterionId);
 
-            # Obtém o rótulo do nível, se existir
-            aria_label = (opcao.get("aria-label") or "").strip()
+            resultado.push({
+                criterion_id: criterionId,
+                criterio: criterio,
+                nivel: nivel
+            });
+        }
 
-            # Extrai também o texto visível da opção, caso o aria-label não exista
-            texto_opcao = opcao.get_text(" ", strip=True)
+        return resultado;
+    """)
 
-            # Normaliza os espaços no texto da opção
-            texto_opcao = " ".join(texto_opcao.split()).strip()
+    print(f"Critérios válidos extraídos: {len(dados)}")
+    for i, item in enumerate(dados, start=1):
+        print(f"Critério {i}: {item['criterio']} => {item['nivel']}")
 
-            # Exibe detalhes de cada opção para facilitar depuração
-            print(
-                f"aria-checked={aria_checked!r} | "
-                f"aria-label={aria_label!r} | "
-                f"texto={texto_opcao!r}"
-            )
-
-            # Se a opção estiver marcada, salva o nível correspondente
-            if aria_checked == "true":
-                criterios[criterio_id]["nivel"] = aria_label or texto_opcao or "Nível sem rótulo"
-                break
-
-    # Retorna os critérios como lista de dicionários
-    return list(criterios.values())
+    return dados
 
 
 def salvar_resultados(dados, nome_arquivo="rubrica.json"):
@@ -244,60 +269,63 @@ def salvar_resultados(dados, nome_arquivo="rubrica.json"):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def extrair_rubrica():
-    """
-    Função principal responsável por:
-    1. iniciar o navegador
-    2. abrir o Google Classroom
-    3. aguardar o usuário abrir a rubrica
-    4. expandir os critérios
-    5. extrair os dados da página
-    6. exibir o resultado no terminal
-    7. salvar os dados em JSON
-
-    Observação:
-        O fechamento do navegador é controlado pelo usuário ao final.
-    """
-
-    # Inicia o navegador com o perfil configurado
+def extrair_rubricas_todos_alunos():
     driver = iniciar_driver()
 
     try:
-        # Abre a página principal do Google Classroom
         driver.get("https://classroom.google.com/")
+        input("Abra a página da atividade com a tabela de estudantes e pressione ENTER... ")
 
-        # Pausa para o usuário navegar manualmente até a rubrica desejada
-        input("Abra a rubrica e pressione ENTER... ")
-
-        # Aguarda um pequeno tempo extra para a página estabilizar
         time.sleep(2)
 
-        # Expande todos os critérios encontrados
-        expandir_criterios(driver)
+        # coleta todos os alunos da tabela
+        alunos = coletar_alunos_da_tabela(driver)
 
-        # Aguarda a interface atualizar após a expansão
-        time.sleep(2)
+        if not alunos:
+            print("Nenhum aluno encontrado na tabela.")
+            return
 
-        # Captura o HTML atual da página
-        html = driver.page_source
+        resultados = []
 
-        # Extrai os dados da rubrica a partir do HTML
-        dados = copiar_rubrica(html)
+        for i, aluno in enumerate(alunos, start=1):
+            print(f"\n===== Aluno {i}/{len(alunos)} =====")
 
-        # Exibe no terminal os critérios e seus respectivos níveis
-        print("\nRESULTADO:\n")
-        for item in dados:
-            print(f"{item['criterio']} => {item['nivel']}")
+            try:
+                resultado = extrair_rubrica_do_aluno(
+                    driver,
+                    aluno["nome"],
+                    aluno["href"]
+                )
+                resultados.append(resultado)
 
-        # Salva os dados extraídos em arquivo JSON
-        salvar_resultados(dados)
+                print(f"Rubrica extraída de: {aluno['nome']}")
+
+            except Exception as e:
+                print(f"Erro ao extrair rubrica de {aluno['nome']}: {e}")
+                resultados.append({
+                    "aluno": aluno["nome"],
+                    "link": aluno["href"],
+                    "erro": str(e)
+                })
+
+        # mostra no terminal
+        print("\nRESULTADO FINAL:\n")
+        for aluno in resultados:
+            print(f"\nAluno: {aluno.get('aluno')}")
+            if "rubrica" in aluno:
+                for item in aluno["rubrica"]:
+                    print(f"  - {item['criterio']} => {item['nivel']}")
+            else:
+                print(f"  Erro: {aluno.get('erro')}")
+
+        salvar_resultados(resultados, "rubricas.json")
 
     finally:
-            driver.quit()
+        driver.quit()
 
 
-# Este bloco garante que a função extrair_rubrica() só será executada
+# Este bloco garante que a função extrair_rubricas_todos_alunos() só será executada
 # automaticamente quando este arquivo for rodado diretamente.
 # Se o arquivo for importado em outro módulo (como main.py), esse trecho não roda.
 if __name__ == "__main__":
-    extrair_rubrica()
+    extrair_rubricas_todos_alunos()
