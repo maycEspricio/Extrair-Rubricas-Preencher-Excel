@@ -269,12 +269,20 @@ def salvar_resultados(dados, nome_arquivo="rubrica.json"):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def extrair_rubricas_todos_alunos():
+def extrair_rubricas_todos_alunos(confirmar_inicio_callback=None, should_stop_callback=None):
     driver = iniciar_driver()
 
     try:
         driver.get("https://classroom.google.com/")
-        input("Abra a página da atividade com a tabela de estudantes e pressione ENTER... ")
+        if confirmar_inicio_callback is None:
+            input("Abra a página da atividade com a tabela de estudantes e pressione ENTER... ")
+        else:
+            # Quando usado por interface gráfica, a confirmação vem por callback
+            # (ex.: botão/caixa de diálogo), evitando travar em input().
+            deve_continuar = confirmar_inicio_callback()
+            if deve_continuar is False:
+                print("Processo interrompido pelo usuário antes da extração.")
+                return
 
         time.sleep(2)
 
@@ -288,6 +296,12 @@ def extrair_rubricas_todos_alunos():
         resultados = []
 
         for i, aluno in enumerate(alunos, start=1):
+            # Permite cancelamento cooperativo quando a função é chamada pela interface.
+            # Se o usuário clicar em "Parar", interrompemos antes de abrir o próximo aluno.
+            if should_stop_callback is not None and should_stop_callback():
+                print("Processo interrompido pelo usuário durante a extração.")
+                break
+
             print(f"\n===== Aluno {i}/{len(alunos)} =====")
 
             try:

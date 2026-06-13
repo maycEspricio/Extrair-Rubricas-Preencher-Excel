@@ -206,6 +206,7 @@ def encontrar_linha_por_criterio(sheet, criterio, coluna_criterio=COLUNA_CRITERI
 
     return None
 
+
 def debug_coluna_nomes(sheet, coluna_nome=COLUNA_NOME_ALUNO, limite=200):
     """
     Mostra no terminal os valores não vazios da coluna do nome do aluno.
@@ -265,7 +266,7 @@ def encontrar_planilha_do_aluno(workbook, nome_aluno, debug=False):
 
     return None
 
-def perguntar_subniveis_por_aluno(rubricas_alunos):
+def perguntar_subniveis_por_aluno(rubricas_alunos, solicitar_subnivel_callback=None, should_stop_callback=None):
     """
     Pergunta o subnível (1 a 5) para cada desempenho de cada aluno.
     Retorna um dicionário no formato:
@@ -279,6 +280,10 @@ def perguntar_subniveis_por_aluno(rubricas_alunos):
     respostas = {}
 
     for aluno in rubricas_alunos:
+        if should_stop_callback is not None and should_stop_callback():
+            print("Processo interrompido pelo usuário antes de concluir os subníveis.")
+            break
+
         nome_aluno = aluno.get("aluno", "").strip()
         rubrica = aluno.get("rubrica", [])
 
@@ -307,10 +312,19 @@ def perguntar_subniveis_por_aluno(rubricas_alunos):
                 continue
 
             while True:
+                if should_stop_callback is not None and should_stop_callback():
+                    print("Processo interrompido pelo usuário durante a coleta de subníveis.")
+                    return respostas
+
                 try:
-                    valor = int(
-                        input(f"Aluno: {nome_aluno} | Desempenho: {nivel.title()} -> digite um valor de 1 a 5: ").strip()
-                    )
+                    if solicitar_subnivel_callback is None:
+                        valor = int(
+                            input(f"Aluno: {nome_aluno} | Desempenho: {nivel.title()} -> digite um valor de 1 a 5: ").strip()
+                        )
+                    else:
+                        # No modo interface gráfica, o valor é pedido em janela.
+                        # O callback deve retornar um inteiro de 1 a 5.
+                        valor = int(solicitar_subnivel_callback(nome_aluno, nivel))
 
                     if 1 <= valor <= 5:
                         respostas[nome_aluno][nivel] = valor
@@ -561,7 +575,7 @@ def preencher_capacidades(sheet, criterios_preenchidos):
 # FUNÇÃO PRINCIPAL / ORQUESTRADORA
 # =========================
 
-def preencher_planilha_excel_aberta(debug_nomes=True):
+def preencher_planilha_excel_aberta(debug_nomes=True, solicitar_subnivel_callback=None, should_stop_callback=None):
     """
     Agora percorre todos os alunos do rubricas.json e tenta localizar,
     em todas as abas da workbook, onde está o nome do aluno na coluna 13.
@@ -574,7 +588,11 @@ def preencher_planilha_excel_aberta(debug_nomes=True):
     if workbook is None:
         raise RuntimeError("Nenhuma planilha aberta.")
 
-    respostas_subnivel = perguntar_subniveis_por_aluno(rubricas_alunos)
+    respostas_subnivel = perguntar_subniveis_por_aluno(
+        rubricas_alunos,
+        solicitar_subnivel_callback=solicitar_subnivel_callback,
+        should_stop_callback=should_stop_callback
+    )
 
     total_alunos = 0
     alunos_localizados = 0
@@ -582,6 +600,10 @@ def preencher_planilha_excel_aberta(debug_nomes=True):
     total_nao_encontrados = []
 
     for aluno_data in rubricas_alunos:
+        if should_stop_callback is not None and should_stop_callback():
+            print("Processo interrompido pelo usuário durante o preenchimento.")
+            break
+
         nome_aluno = aluno_data.get("aluno", "").strip()
         rubrica = aluno_data.get("rubrica", [])
 
