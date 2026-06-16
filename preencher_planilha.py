@@ -57,10 +57,48 @@ NIVEIS_ORDENADOS = [
     "autônomo",
 ]
 
+# Lista de graus válidos (em minúsculas) que podem vir do Classroom.
+# O Classroom agora retorna o nível do critério como um grau (G1–G5).
+GRAUS_VALIDOS = ["g1", "g2", "g3", "g4", "g5"]
+
 
 # =========================
 # FUNÇÕES AUXILIARES DE TEXTO E LEITURA
 # =========================
+
+def extrair_numero_grau(nivel_texto: str):
+    """
+    Extrai o número (1 a 5) de uma string que representa um grau do Classroom.
+
+    Aceita variações como:
+        "G1", "g1", "Grau 1", "grau 3", "G 4", "5"
+
+    Retorno:
+        int entre 1 e 5 se o grau for reconhecido, ou None caso contrário.
+
+    Exemplos:
+        extrair_numero_grau("G3")     -> 3
+        extrair_numero_grau("grau 2") -> 2
+        extrair_numero_grau("Apoiado")-> None
+    """
+    import re
+    if not nivel_texto:
+        return None
+    texto = str(nivel_texto).strip().lower()
+    # Tenta casar padrões como "g1", "g 1", "grau 1", "grau1" ou apenas "1"
+    match = re.search(r'(?:grau\s*|g\s*)(\d)', texto)
+    if match:
+        numero = int(match.group(1))
+        if 1 <= numero <= 5:
+            return numero
+    # Tenta número isolado
+    match = re.fullmatch(r'\d', texto)
+    if match:
+        numero = int(match.group())
+        if 1 <= numero <= 5:
+            return numero
+    return None
+
 
 def normalizar(texto):
     """

@@ -1,2 +1,96 @@
+# =========================
+# DADOS DE EXECUÇÃO (sensíveis)
+# =========================
+
+# Rubricas extraídas do Classroom — contêm dados pessoais dos alunos
+rubricas.json
+rubrica.json
+
+# Qualquer outro JSON gerado na raiz (logs, exports, etc.)
 *.json
+
+# =========================
+# PYTHON
+# =========================
+
+# Cache de bytecode
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Ambiente virtual
+.venv/
+venv/
+env/
+ENV/
+
+# Distribuição / build
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+
+# =========================
+# NODE / FRONTEND
+# =========================
+
+# Dependências (reinstalar com npm install)
+frontend/node_modules/
+
+# Build de produção
+frontend/dist/
+
+# Logs do npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# SISTEMA OPERACIONAL
+# =========================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# =========================
+# EDITORES / IDEs
+# =========================
+
+# VSCode — manter apenas configurações de workspace compartilháveis
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# PyCharm / JetBrains
+.idea/
+
+# Vim
+*.swp
+*.swo
+
+# =========================
+# OUTROS
+# =========================
+
+# Logs genéricos
+*.log
+
+# Arquivos temporários
+*.tmp
+*.bak
