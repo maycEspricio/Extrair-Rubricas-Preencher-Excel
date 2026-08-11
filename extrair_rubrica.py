@@ -32,6 +32,7 @@ def iniciar_driver():
     O objetivo principal aqui é:
     - reutilizar um perfil já existente do Chrome
     - abrir o navegador maximizado
+    - ocultar a flag de automação para evitar bloqueios do Classroom
 
     Retorno:
         webdriver.Chrome: instância do navegador pronta para uso.
@@ -41,16 +42,24 @@ def iniciar_driver():
     options = Options()
 
     # Define o diretório do perfil de usuário do Chrome que será reutilizado.
-    # Isso é útil para manter sessão logada, cookies e configurações já existentes.
-    # Exemplo: evita precisar fazer login no Google Classroom toda vez.
     options.add_argument(r"--user-data-dir=C:\selenium\chrome-profile")
 
     # Faz o navegador abrir maximizado para facilitar a visualização
-    # e evitar problemas com elementos escondidos por layout responsivo.
     options.add_argument("--start-maximized")
 
-    # Retorna a instância do Chrome já configurada
-    return webdriver.Chrome(options=options)
+    # Oculta a automação do Selenium para evitar bloqueio do Classroom
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+
+    driver = webdriver.Chrome(options=options)
+
+    # Executa script CDP para ocultar o navigator.webdriver
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
+
+    return driver
 
 def coletar_alunos_da_tabela(driver):
     """
@@ -113,13 +122,82 @@ def esperar_rubrica_carregar(driver, timeout=20):
     print("Rubrica carregada com sucesso.")
     return True
 
-def extrair_rubrica_do_aluno(driver, nome_aluno, href):
+def extrair_rubrica_do_aluno(driver, nome_aluno, href, force_navigation=False):
     """
-    Abre a página do aluno, extrai a rubrica
-    e devolve um dicionário com os dados.
+    Seleciona o aluno (por clique físico ou URL), expande a rubrica se necessário,
+    espera o carregamento das notas e extrai a rubrica.
     """
-    print(f"\nAbrindo aluno: {nome_aluno}")
-    driver.get(href)
+    print(f"\nSelecionando aluno: {nome_aluno} (Navegação forçada: {force_navigation})")
+    
+    # Extrai o ID do estudante da URL para sincronização de SPA
+    import re
+    match_id = re.search(r'/student/([A-Za-z0-9]+)', href)
+    student_id = match_id.group(1) if match_id else None
+
+    clicado = False
+    if not force_navigation:
+        try:
+            # Busca elementos de texto que possam conter o nome do aluno na tela
+            normalized_name = nome_aluno.strip().lower()
+            xpath_expr = f"//*[(self::span or self::div or self::a) and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZÀÈÌÒÙÁÉÍÓÚÂÊÎÔÛÃÕÇ', 'abcdefghijklmnopqrstuvwxyzàèìòùáéíóúâêîôûãõç'), '{normalized_name}')]"
+            candidatos = driver.find_elements(By.XPATH, xpath_expr)
+            
+            if not candidatos:
+                # Fallback secundário buscando span com classe padrão
+                candidatos = [el for el in driver.find_elements(By.CSS_SELECTOR, "span.YVvGBb") if normalized_name in el.text.lower()]
+                
+            for c in candidatos:
+                if c.is_displayed():
+                    # Centraliza o elemento na tela
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", c)
+                    time.sleep(0.3)
+                    
+                    # Encontra o ancestral clicável correto via JS (A, BUTTON, role=button, etc)
+                    clickable_element = driver.execute_script("""
+                        let start = arguments[0];
+                        let p = start;
+                        for (let i = 0; i < 6; i++) {
+                            if (!p) break;
+                            if (p.tagName === 'A' || 
+                                p.tagName === 'BUTTON' || 
+                                p.getAttribute('role') === 'button' || 
+                                p.getAttribute('role') === 'option' || 
+                                p.getAttribute('role') === 'listitem' ||
+                                p.getAttribute('tabindex') === '0' ||
+                                p.tagName === 'TR') {
+                                return p;
+                            }
+                            p = p.parentElement;
+                        }
+                        return start;
+                    """, c)
+                    
+                    if clickable_element:
+                        # Executa clique físico/real via ActionChains para garantir que o Classroom processe o clique
+                        from selenium.webdriver.common.action_chains import ActionChains
+                        actions = ActionChains(driver)
+                        actions.move_to_element(clickable_element).click().perform()
+                        clicado = True
+                        print(f"Clique físico executado com sucesso no aluno {nome_aluno}.")
+                        break
+        except Exception as e:
+            print(f"Erro ao tentar clicar na barra lateral para o aluno {nome_aluno}: {e}")
+
+    if not clicado:
+        # Navega diretamente pelo link (Primeiro load ou caso clique falhe)
+        print(f"Navegando via link: {href}")
+        driver.get(href)
+        
+    # Sincronização de SPA: Aguarda a URL mudar para a do aluno selecionado
+    if student_id:
+        try:
+            WebDriverWait(driver, 10).until(EC.url_contains(student_id))
+            print(f"URL confirmada para o aluno ID: {student_id}")
+        except Exception:
+            print(f"Aviso: A URL não atualizou para o ID {student_id} a tempo.")
+
+    # Tempo de segurança para o DOM do aluno anterior descarregar e o novo renderizar
+    time.sleep(1.5)
 
     wait = WebDriverWait(driver, 20)
 
@@ -135,13 +213,42 @@ def extrair_rubrica_do_aluno(driver, nome_aluno, href):
             "observacao": "Critérios da rubrica não encontrados."
         }
 
-    time.sleep(1)
+    # Clica em todos os botões/cabeçalhos de critério que estão colapsados (aria-expanded="false")
+    try:
+        driver.execute_script("""
+            const botoes = Array.from(document.querySelectorAll('[data-criterion-id] [aria-expanded="false"], [data-criterion-id][aria-expanded="false"], [aria-controls][aria-expanded="false"]'));
+            botoes.forEach(b => {
+                try {
+                    b.click();
+                } catch(e) {
+                    console.error("Erro ao expandir critério:", e);
+                }
+            });
+        """)
+        print("Critérios colapsados expandidos programaticamente.")
+        time.sleep(1)
+    except Exception as e:
+        print(f"Erro ao tentar expandir os critérios: {e}")
 
-    # scroll leve para incentivar renderização
+    # Agora espera que as opções de nível sejam renderizadas após a expansão
+    try:
+        wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '[role="menuitemradio"]')) > 0)
+    except Exception as e:
+        print(f"Opções de nível não carregaram após expansão: {e}")
+
+    # scroll leve para incentivar renderização de todos os elementos e carregamento de estados
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.4);")
     time.sleep(0.5)
     driver.execute_script("window.scrollTo(0, 0);")
     time.sleep(0.5)
+
+    # Espera inteligente para ver se alguma opção está marcada (comportamento assíncrono do Classroom ao carregar nota)
+    try:
+        wait_marcado = WebDriverWait(driver, 6)
+        wait_marcado.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '[role="menuitemradio"][aria-checked="true"], [role="menuitemradio"].KKjvXb')) > 0)
+        print("Opção marcada encontrada/carregada com sucesso!")
+    except Exception:
+        print("Nenhuma opção marcada carregada após 6 segundos (aluno pode não ter sido avaliado ainda).")
 
     html = driver.page_source
 
@@ -160,85 +267,107 @@ def extrair_rubrica_do_aluno(driver, nome_aluno, href):
 
 def copiar_rubrica(driver):
     """
-    Extrai critérios e níveis diretamente do DOM usando a ligação
-    entre o botão do critério (aria-controls) e o painel de opções (id).
+    Extrai critérios e níveis diretamente do DOM de forma resiliente a mudanças de classes do Classroom.
     """
     dados = driver.execute_script("""
         const resultado = [];
         const vistos = new Set();
 
-        const blocos = Array.from(document.querySelectorAll('.stS1kf.Lzvjbf[data-criterion-id], [data-criterion-id]'));
+        const blocos = Array.from(document.querySelectorAll('[data-criterion-id]')).filter(el => el.offsetHeight > 0);
 
         for (const bloco of blocos) {
             const criterionId = (bloco.getAttribute('data-criterion-id') || '').trim();
             if (!criterionId || vistos.has(criterionId)) continue;
 
+            // Busca o título do critério de forma resiliente
             let criterio = 'Critério não encontrado';
-
-            // tenta achar o texto do critério dentro do bloco
-            const candidatosTitulo = Array.from(bloco.querySelectorAll('.K0lUWd'));
-            const tituloValido = candidatosTitulo
-                .map(el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim())
-                .find(t => t.length > 0);
-
-            if (tituloValido) {
-                criterio = tituloValido;
-            }
-
-            // acha o botão do critério que aponta para o painel correto
-            let botaoControlador = Array.from(bloco.querySelectorAll('[aria-controls]'))
-                .find(el => (el.getAttribute('aria-controls') || '').trim().length > 0);
-
-            // fallback: procurar próximo do bloco
-            if (!botaoControlador && bloco.parentElement) {
-                botaoControlador = Array.from(bloco.parentElement.querySelectorAll('[aria-controls]'))
-                    .find(el => (el.getAttribute('aria-controls') || '').trim().length > 0);
+            const cabecalho = bloco.querySelector('h2, h3, h4, [role="heading"], .K0lUWd');
+            if (cabecalho) {
+                criterio = (cabecalho.innerText || cabecalho.textContent || '').replace(/\\s+/g, ' ').trim();
+            } else {
+                // Fallback: pega o primeiro texto curto no topo do bloco
+                const primeiroTexto = Array.from(bloco.querySelectorAll('div, span'))
+                    .map(el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim())
+                    .find(t => t.length > 0 && t.length < 100);
+                if (primeiroTexto) {
+                    criterio = primeiroTexto;
+                }
             }
 
             let nivel = 'Nenhum nível marcado';
             let opcoes = [];
-
+            
+            // 1. Tenta achar via aria-controls (apenas visíveis)
+            const botaoControlador = bloco.querySelector('[aria-controls]') || 
+                                     (bloco.getAttribute('aria-controls') ? bloco : null);
             if (botaoControlador) {
-                const panelId = (botaoControlador.getAttribute('aria-controls') || '').trim();
-                if (panelId) {
-                    const painel = document.getElementById(panelId);
-                    if (painel) {
-                        opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"]'));
+                const panelId = botaoControlador.getAttribute('aria-controls');
+                const painel = document.getElementById(panelId);
+                if (painel) {
+                    opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"], [role="radio"], [role="button"], [aria-checked]'))
+                                  .filter(el => el.offsetHeight > 0);
+                }
+            }
+            
+            // 2. Se não achar, procura subindo a árvore DOM até encontrar um container com opções (apenas visíveis)
+            if (opcoes.length === 0) {
+                let container = bloco.parentElement;
+                while (container && container.tagName !== 'BODY') {
+                    const ops = Array.from(container.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
+                                     .filter(el => el.offsetHeight > 0);
+                    if (ops.length > 0) {
+                        opcoes = ops;
+                        break;
                     }
+                    container = container.parentElement;
                 }
             }
 
-            // fallback final: procura no contêiner visual mais próximo
-            if (opcoes.length === 0) {
-                const container = bloco.closest('.NBQ1Tb') || bloco.parentElement;
-                if (container) {
-                    opcoes = Array.from(container.querySelectorAll('[role="menuitemradio"]'));
-                }
-            }
+            // Procura diretamente a opção marcada entre as encontradas
+            let marcada = opcoes.find(el => {
+                // Verifica se o próprio elemento está marcado
+                const selfChecked = (el.getAttribute('aria-checked') || '').toLowerCase() === 'true' || 
+                                     (el.getAttribute('aria-selected') || '').toLowerCase() === 'true' ||
+                                     el.classList.contains('KKjvXb');
+                if (selfChecked) return true;
 
-            if (opcoes.length === 0) {
-                continue;
-            }
+                // Verifica se algum filho/descendente está marcado (comum no Classroom estruturado)
+                const descChecked = el.querySelector('[aria-checked="true"], [aria-selected="true"], .KKjvXb');
+                if (descChecked) return true;
 
-            let marcada = opcoes.find(el => (el.getAttribute('aria-checked') || '').toLowerCase() === 'true');
-
-            if (!marcada) {
-                marcada = opcoes.find(el => el.classList.contains('KKjvXb'));
-            }
+                return false;
+            });
 
             if (marcada) {
+                // Extrai o texto do aria-label ou data-tooltip (já que o innerText costuma vir vazio no DOM)
                 nivel =
                     (marcada.getAttribute('aria-label') || '').trim() ||
+                    (marcada.getAttribute('data-tooltip') || '').trim() ||
                     (marcada.innerText || marcada.textContent || '').replace(/\\s+/g, ' ').trim() ||
                     'Nível sem rótulo';
             }
+
+            // Coleta diagnóstico das opções para depuração no console do Python
+            const opcoesDebug = opcoes.map(el => {
+                const attrs = {};
+                for (let i = 0; i < el.attributes.length; i++) {
+                    attrs[el.attributes[i].name] = el.attributes[i].value;
+                }
+                return {
+                    texto: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(),
+                    classes: el.className || '',
+                    atributos: attrs,
+                    html: el.outerHTML
+                };
+            });
 
             vistos.add(criterionId);
 
             resultado.push({
                 criterion_id: criterionId,
                 criterio: criterio,
-                nivel: nivel
+                nivel: nivel,
+                opcoes_debug: opcoesDebug
             });
         }
 
@@ -248,6 +377,17 @@ def copiar_rubrica(driver):
     print(f"Critérios válidos extraídos: {len(dados)}")
     for i, item in enumerate(dados, start=1):
         print(f"Critério {i}: {item['criterio']} => {item['nivel']}")
+        print(f"  Diagnóstico de opções do Critério {i}:")
+        for op in item.get('opcoes_debug', []):
+            is_marcada = op['atributos'].get('aria-checked') == 'true' or op['atributos'].get('aria-selected') == 'true' or 'KKjvXb' in op['classes']
+            marcador = " [MARCADA]" if is_marcada else ""
+            print(f"    - Nível: '{op['texto']}' | Classes: '{op['classes']}' | Atributos: {op['atributos']}{marcador}")
+            print(f"      HTML Completo da Opção: {op['html']}")
+
+    # Remove o campo debug antes de retornar para não poluir o JSON final
+    for item in dados:
+        if 'opcoes_debug' in item:
+            del item['opcoes_debug']
 
     return dados
 
@@ -305,13 +445,34 @@ def extrair_rubricas_todos_alunos(confirmar_inicio_callback=None, should_stop_ca
             print(f"\n===== Aluno {i}/{len(alunos)} =====")
 
             try:
+                # O primeiro aluno sempre força a navegação via URL para abrir a tela de correção.
+                # Os próximos navegam via cliques na barra lateral (mais rápido e evita bugs).
                 resultado = extrair_rubrica_do_aluno(
                     driver,
                     aluno["nome"],
-                    aluno["href"]
+                    aluno["href"],
+                    force_navigation=(i == 1)
                 )
-                resultados.append(resultado)
 
+                # Workaround para o bug do Classroom: se for o primeiro aluno e a rubrica não carregou (veio vazia),
+                # nós clicamos no segundo aluno para acordar a interface e depois voltamos para o primeiro.
+                if i == 1 and (not resultado.get("rubrica") or "não encontrados" in resultado.get("observacao", "")) and len(alunos) > 1:
+                    print("\n[WORKAROUND] Rubrica do primeiro aluno não carregou no load inicial.")
+                    print("[WORKAROUND] Selecionando o segundo aluno temporariamente para ativar o painel...")
+                    # Seleciona o segundo aluno via clique
+                    extrair_rubrica_do_aluno(driver, alunos[1]["nome"], alunos[1]["href"], force_navigation=False)
+                    time.sleep(1.5)
+                    
+                    print("[WORKAROUND] Retornando ao primeiro aluno para nova tentativa...")
+                    # Tenta extrair o primeiro aluno novamente via clique
+                    resultado = extrair_rubrica_do_aluno(
+                        driver,
+                        aluno["nome"],
+                        aluno["href"],
+                        force_navigation=False
+                    )
+
+                resultados.append(resultado)
                 print(f"Rubrica extraída de: {aluno['nome']}")
 
             except Exception as e:
