@@ -41,8 +41,8 @@ COL_INICIO_AVALIACAO = 8
 COL_FIM_AVALIACAO = 27
 
 # Linha em que a busca por critérios/capacidades deve começar.
-# Isso evita procurar em cabeçalhos, títulos, instruções ou outras áreas acima.
-LINHA_INICIAL_BUSCA = 21
+# Conforme layout do professor, inicia-se na linha 12.
+LINHA_INICIAL_BUSCA = 12
 
 LINHA_NOME_ALUNO = 10
 COLUNA_NOME_ALUNO = 13  # coluna M
@@ -229,8 +229,18 @@ def escolher_planilha(workbook, nome_aba=None):
 # BUSCA DE LINHAS E LIMPEZA DE FAIXAS
 # =========================
 
-def encontrar_linha_por_criterio(sheet, criterio, coluna_criterio=COLUNA_CRITERIO, linha_inicial=1, linha_final=None):
+def encontrar_linha_por_criterio(sheet, criterio, coluna_criterio=COLUNA_CRITERIO, linha_inicial=1, linha_final=None, col_values=None):
     criterio_norm = normalizar(criterio)
+
+    if col_values is not None:
+        # Busca em memória para ser extremamente rápido e evitar erros COM de "Excel Ocupado"
+        for idx in range(linha_inicial - 1, len(col_values)):
+            linha_valores = col_values[idx]
+            valor = linha_valores[0] if isinstance(linha_valores, (list, tuple)) else linha_valores
+            texto = normalizar(valor)
+            if criterio_norm and criterio_norm in texto:
+                return idx + 1
+        return None
 
     if linha_final is None:
         linha_final = obter_linha_final(sheet)
@@ -375,9 +385,31 @@ def perguntar_subniveis_por_aluno(rubricas_alunos, solicitar_subnivel_callback=N
 
     return respostas
 
+def escrever_celula_com_retry(sheet, linha, coluna, valor, retries=15, delay=0.5):
+    import time
+    for i in range(retries):
+        try:
+            sheet.Cells(linha, coluna).Value = valor
+            return
+        except Exception as e:
+            if "800ac472" in str(e) or "-2146777998" in str(e):
+                time.sleep(delay)
+            else:
+                raise e
+    sheet.Cells(linha, coluna).Value = valor
+
 def limpar_faixa(sheet, linha, col_inicio=COL_INICIO_AVALIACAO, col_fim=COL_FIM_AVALIACAO):
-    for col in range(col_inicio, col_fim + 1):
-        sheet.Cells(linha, col).Value = ""
+    import time
+    for i in range(15):
+        try:
+            sheet.Range(f"H{linha}:AA{linha}").Value = ""
+            return
+        except Exception as e:
+            if "800ac472" in str(e) or "-2146777998" in str(e):
+                time.sleep(0.5)
+            else:
+                raise e
+    sheet.Range(f"H{linha}:AA{linha}").Value = ""
 
 def obter_linha_final(sheet):
     """
@@ -486,43 +518,100 @@ def perguntar_subniveis_por_desempenho(dados):
 # PREENCHIMENTO DOS CRITÉRIOS INDIVIDUAIS
 # =========================
 
-def preencher_criterios(sheet, dados, respostas_subnivel_aluno):
+def mapear_estrutura_planilha(sheet):
+    """
+    Varre a planilha a partir da linha 12 para mapear a estrutura física:
+    - Lista de linhas de critérios (na ordem de aparecimento).
+    - Lista de blocos de capacidades com suas respectivas linhas de critérios.
+    """
+    linha_final = obter_linha_final(sheet)
+    if linha_final < LINHA_INICIAL_BUSCA:
+        return [], []
+
+    # Lê todas as colunas de B a G (2 a 7) usando A1-notation
+    valores = sheet.Range(f"B{LINHA_INICIAL_BUSCA}:G{linha_final}").Value
+    if not valores:
+        return [], []
+
+    criterios_linhas = []
+    capacidades_blocos = []
+    capacidade_atual = None
+
+    for i, linha_valores in enumerate(valores):
+        linha_real = i + LINHA_INICIAL_BUSCA
+
+        val_b = linha_valores[0]
+        val_c = linha_valores[1]
+        val_d = linha_valores[2]
+        val_e = linha_valores[3]
+        val_f = linha_valores[4]
+        texto = linha_valores[5] # Coluna G (7)
+
+        tem_bcd = (val_b is not None and str(val_b).strip() != "") or \
+                  (val_c is not None and str(val_c).strip() != "") or \
+                  (val_d is not None and str(val_d).strip() != "")
+
+        tem_ef = (val_e is not None and str(val_e).strip() != "") or \
+                 (val_f is not None and str(val_f).strip() != "")
+
+        if tem_bcd:
+            capacidade_atual = {
+                "linha_capacidade": linha_real,
+                "texto_capacidade": str(texto).strip() if texto else f"Capacidade Linha {linha_real}",
+                "criterios": []
+            }
+            capacidades_blocos.append(capacidade_atual)
+        elif tem_ef:
+            criterios_linhas.append(linha_real)
+            if capacidade_atual:
+                capacidade_atual["criterios"].append(linha_real)
+
+    return criterios_linhas, [b for b in capacidades_blocos if b["criterios"]]
+
+
+def preencher_criterios(sheet, dados, respostas_subnivel_aluno, capacidades_blocos=None):
+    # Filtra os dados para remover itens de controle do Classroom
+    dados_filtrados = []
+    for item in dados:
+        crit_text = normalizar(item.get("criterio", ""))
+        if not crit_text or crit_text == "expandir critério" or "critério não encontrado" in crit_text:
+            continue
+        dados_filtrados.append(item)
+
+    # Obtém todas as linhas de critérios físicas mapeadas na planilha
+    criterios_linhas, _ = mapear_estrutura_planilha(sheet)
+
     preenchidos = 0
     nao_encontrados = []
     criterios_preenchidos = []
 
-    linha_final = obter_linha_final(sheet)
+    for idx, item in enumerate(dados_filtrados):
+        if idx >= len(criterios_linhas):
+            print(f"[AVISO] Mais critérios no Classroom ({len(dados_filtrados)}) do que linhas na planilha ({len(criterios_linhas)}).")
+            break
 
-    for item in dados:
+        linha = criterios_linhas[idx]
         criterio = item["criterio"]
         nivel = normalizar(item["nivel"])
 
-        if nivel not in respostas_subnivel_aluno:
-            print(f"[IGNORADO] {criterio} -> nível sem resposta: {item['nivel']}")
+        is_nao_atingiu = (nivel == "não atingiu")
+
+        if nivel not in respostas_subnivel_aluno and not is_nao_atingiu:
+            print(f"[IGNORADO] {criterio} na linha {linha} -> nível sem resposta: {item['nivel']}")
             continue
 
         try:
-            pontuacao_interna = obter_pontuacao_interna(nivel, respostas_subnivel_aluno[nivel])
+            if is_nao_atingiu:
+                pontuacao_interna = 1
+            else:
+                pontuacao_interna = obter_pontuacao_interna(nivel, respostas_subnivel_aluno[nivel])
             coluna_destino = obter_coluna_excel_por_pontuacao(pontuacao_interna)
         except ValueError as e:
-            print(f"[IGNORADO] {criterio} -> {e}")
+            print(f"[IGNORADO] {criterio} na linha {linha} -> {e}")
             continue
 
-        linha = encontrar_linha_por_criterio(
-            sheet,
-            criterio,
-            coluna_criterio=COLUNA_CRITERIO,
-            linha_inicial=LINHA_INICIAL_BUSCA,
-            linha_final=linha_final
-        )
-
-        if linha is None:
-            nao_encontrados.append(criterio)
-            print(f"[NÃO ENCONTRADO] {criterio}")
-            continue
-
-        limpar_faixa(sheet, linha)
-        sheet.Cells(linha, coluna_destino).Value = "✓"
+        # Escreve a nova marcação diretamente na célula sem limpar a faixa
+        escrever_celula_com_retry(sheet, linha, coluna_destino, "✓")
 
         criterios_preenchidos.append({
             "linha": linha,
@@ -538,75 +627,118 @@ def preencher_criterios(sheet, dados, respostas_subnivel_aluno):
     return criterios_preenchidos, preenchidos, nao_encontrados
 
 
-# =========================
-# IDENTIFICAÇÃO E PREENCHIMENTO DAS CAPACIDADES
-# =========================
-
-def identificar_blocos_capacidade(sheet, criterios_preenchidos):
-    if not criterios_preenchidos:
-        return []
-
-    linhas_criterio = sorted(item["linha"] for item in criterios_preenchidos)
-    conjunto_linhas_criterio = set(linhas_criterio)
-    linha_final = obter_linha_final(sheet)
-
-    blocos = []
-    capacidade_atual = None
-
-    for linha in range(LINHA_INICIAL_BUSCA, linha_final + 1):
-        texto = sheet.Cells(linha, COLUNA_CRITERIO).Value
-        texto_norm = normalizar(texto)
-
-        if not texto_norm:
-            continue
-
-        if linha in conjunto_linhas_criterio:
-            if capacidade_atual:
-                capacidade_atual["criterios"].append(linha)
-            continue
-
-        capacidade_atual = {
-            "linha_capacidade": linha,
-            "texto_capacidade": str(texto).strip(),
-            "criterios": []
-        }
-        blocos.append(capacidade_atual)
-
-    return [b for b in blocos if b["criterios"]]
-
-
 def arredondar_media_para_int(mediana):
+    import math
     return int(math.floor(mediana + 0.5))
 
 
-def preencher_capacidades(sheet, criterios_preenchidos):
-    if not criterios_preenchidos:
-        print("\nNenhum critério preenchido.")
+# O preencher_capacidades agora verifica a planilha fisicamente (colunas 8 a 27) para decidir se calcula a capacidade
+def preencher_capacidades(sheet, capacidades_blocos):
+    print("\nCalculando capacidades com base nas notas da planilha...\n")
+
+    linha_final = obter_linha_final(sheet)
+    if linha_final < LINHA_INICIAL_BUSCA:
         return
 
-    mapa = {item["linha"]: item["pontuacao"] for item in criterios_preenchidos}
-    blocos = identificar_blocos_capacidade(sheet, criterios_preenchidos)
+    # Lê todas as notas da planilha de uma vez (linhas 12 até linha_final, colunas H a AA, ou seja, 8 a 27)
+    valores_notas = sheet.Range(f"H{LINHA_INICIAL_BUSCA}:AA{linha_final}").Value
+    if not valores_notas:
+        return
 
-    print("\nCalculando capacidades...\n")
+    for bloco in capacidades_blocos:
+        pontuacoes = []
+        todos_avaliados = True
 
-    for bloco in blocos:
-        pontuacoes = [mapa[l] for l in bloco["criterios"] if l in mapa]
+        for c_linha in bloco["criterios"]:
+            # Mapeia c_linha para o index correspondente na tupla valores_notas
+            idx_linha = c_linha - LINHA_INICIAL_BUSCA
+            if idx_linha < 0 or idx_linha >= len(valores_notas):
+                todos_avaliados = False
+                break
 
-        if not pontuacoes:
+            linha_valores = valores_notas[idx_linha]
+            
+            # Procura se há um "✓" nesta linha nas colunas de nota
+            nota_encontrada = None
+            # Trata caso de linha única retornada como tupla plana pelo win32com
+            if not isinstance(linha_valores, (list, tuple)):
+                # Se for valor único
+                if linha_valores == "✓":
+                    # Nota única (precisamos saber a coluna do range, mas nesse caso a linha só tem 1 coluna, improvável)
+                    nota_encontrada = 1
+            else:
+                for col_idx, val in enumerate(linha_valores):
+                    if val == "✓":
+                        nota_encontrada = col_idx + 1 # pontuação é de 1 a 20
+                        break
+            
+            if nota_encontrada is not None:
+                pontuacoes.append(nota_encontrada)
+            else:
+                todos_avaliados = False
+                break
+
+        if not todos_avaliados:
+            print(f"[CAPACIDADE IGNORADA] '{bloco['texto_capacidade']}' -> nem todos os {len(bloco['criterios'])} critérios foram preenchidos na planilha.")
             continue
 
         mediana = median(pontuacoes)
-
         if mediana <= 10:
             mediana = 11
 
         mediana_final = arredondar_media_para_int(mediana)
         coluna = obter_coluna_excel_por_pontuacao(mediana_final)
 
-        limpar_faixa(sheet, bloco["linha_capacidade"])
-        sheet.Cells(bloco["linha_capacidade"], coluna).Value = "X"
+        escrever_celula_com_retry(sheet, bloco["linha_capacidade"], coluna, "X")
 
-        print(f"[CAPACIDADE] {bloco['texto_capacidade']} -> mediana={mediana_final}")
+        print(f"[CAPACIDADE] {bloco['texto_capacidade']} -> mediana={mediana_final} marcada com 'X' na coluna {coluna}")
+
+
+def limpar_marcacoes_invalidas(sheet):
+    """
+    Limpa marcações residuais incorretas da planilha em lote (para ser 1000x mais rápido).
+    """
+    linha_final = obter_linha_final(sheet)
+    if linha_final < LINHA_INICIAL_BUSCA:
+        return
+
+    # Lê todas as colunas de B a AA (2 a 27) de uma vez usando A1-notation
+    valores = sheet.Range(f"B{LINHA_INICIAL_BUSCA}:AA{linha_final}").Value
+    if not valores:
+        return
+
+    for i, linha_valores in enumerate(valores):
+        linha_real = i + LINHA_INICIAL_BUSCA
+
+        # Mapeamento do slice retornado: 
+        # 0->B(2), 1->C(3), 2->D(4), 3->E(5), 4->F(6)
+        val_b = linha_valores[0]
+        val_c = linha_valores[1]
+        val_d = linha_valores[2]
+        val_e = linha_valores[3]
+        val_f = linha_valores[4]
+
+        tem_bcd = (val_b is not None and str(val_b).strip() != "") or \
+                  (val_c is not None and str(val_c).strip() != "") or \
+                  (val_d is not None and str(val_d).strip() != "")
+
+        tem_ef = (val_e is not None and str(val_e).strip() != "") or \
+                 (val_f is not None and str(val_f).strip() != "")
+
+        if tem_ef:
+            # É Critério: limpa 'X's das colunas de nota (colunas 8 a 27, ou seja, index 6 a 25 no slice valores)
+            for col_idx in range(6, 26):
+                val = linha_valores[col_idx]
+                if val == "X" or val == "x":
+                    col_real = col_idx + 2
+                    sheet.Cells(linha_real, col_real).Value = ""
+        elif tem_bcd:
+            # É Capacidade: limpa '✓'s das colunas de nota (colunas 8 a 27, ou seja, index 6 a 25 no slice valores)
+            for col_idx in range(6, 26):
+                val = linha_valores[col_idx]
+                if val == "✓":
+                    col_real = col_idx + 2
+                    sheet.Cells(linha_real, col_real).Value = ""
 
 
 # =========================
@@ -672,15 +804,37 @@ def preencher_planilha_excel_aberta(debug_nomes=True, solicitar_subnivel_callbac
         print(f"[ABA SELECIONADA] {sheet.Name}")
         print(f"[NOME LOCALIZADO EM] linha {LINHA_NOME_ALUNO}, coluna {COLUNA_NOME_ALUNO}")
 
+        # Limpa marcações incorretas de execuções passadas
+        # limpar_marcacoes_invalidas(sheet)
+
+        # Mapeia as capacidades e estruturas da planilha
+        criterios_linhas, capacidades_blocos = mapear_estrutura_planilha(sheet)
+
         respostas_aluno = respostas_subnivel.get(nome_aluno, {})
 
         criterios_preenchidos, preenchidos, nao_encontrados = preencher_criterios(
             sheet,
             rubrica,
-            respostas_aluno
+            respostas_aluno,
+            capacidades_blocos
         )
 
-        preencher_capacidades(sheet, criterios_preenchidos)
+        preencher_capacidades(sheet, capacidades_blocos)
+
+        total_preenchidos += preenchidos
+        total_nao_encontrados.extend([f"{nome_aluno}: {c}" for c in nao_encontrados])
+
+    print("\n" + "=" * 70)
+    print("RESUMO FINAL")
+    print(f"Total de alunos no JSON: {total_alunos}")
+    print(f"Alunos localizados na workbook: {alunos_localizados}")
+    print(f"Total de critérios preenchidos: {total_preenchidos}")
+    print(f"Total de critérios não encontrados: {len(total_nao_encontrados)}")
+
+    if total_nao_encontrados:
+        print("\nCritérios não encontrados:")
+        for item in total_nao_encontrados:
+            print(f" - {item}")
 
         total_preenchidos += preenchidos
         total_nao_encontrados.extend([f"{nome_aluno}: {c}" for c in nao_encontrados])
