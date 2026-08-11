@@ -14,9 +14,6 @@ Mapeamento de pontuação:
       Parcialmente autônomo    → 11 a 15
       Autônomo                 → 16 a 20
 
-    Grau (subnível dentro da faixa):
-      G1 → +0  (posição 1)
-      G2 → +1
       G3 → +2
       G4 → +3
       G5 → +4
@@ -37,16 +34,17 @@ from preencher_planilha import (
     COLUNA_CRITERIO,
     LINHA_INICIAL_BUSCA,
     extrair_numero_grau,
+    limpar_marcacoes_invalidas,
+    mapear_estrutura_planilha,
+    escrever_celula_com_retry,
 )
 
 
-def preencher_criterios_automatico(sheet, dados, autonomia_fornecida):
-    """
-    Preenche os critérios de um aluno usando:
-      - autonomia_fornecida (str): nível informado pelo professor → define a FAIXA (1–20)
-      - grau extraído de item["nivel"] (G1–G5) → define o SUBNÍVEL dentro da faixa
 
-    Critérios com "Nenhum nível marcado" (ou grau inválido) são silenciosamente ignorados.
+def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidades_blocos=None):
+    """
+    Localiza cada critério no Excel e preenche com "✓" na coluna correspondente
+    à pontuação calculada.
 
     Retorno:
         (criterios_preenchidos, total_preenchidos, nao_encontrados)
@@ -64,42 +62,96 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida):
         print(f"[AVISO] Autonomia inválida: '{autonomia_fornecida}' — ignorando aluno.")
         return criterios_preenchidos, preenchidos, nao_encontrados
 
+    # Filtra os dados para remover itens de controle do Classroom
+    dados_filtrados = []
+    for item in dados:
+        crit_text = normalizar(item.get("criterio", ""))
+        if not crit_text or crit_text == "expandir critério" or "critério não encontrado" in crit_text:
+            continue
+        dados_filtrados.append(item)
+
+    # Obtém todas as linhas de critérios físicas mapeadas na planilha
+    criterios_linhas, _ = mapear_estrutura_planilha(sheet)
     linha_final = obter_linha_final(sheet)
 
-    for item in dados:
+    # Lê toda a coluna G em lote
+    valores_col = sheet.Range(f"G1:G{linha_final}").Value
+    if valores_col and not isinstance(valores_col, (list, tuple)):
+        valores_col = (valores_col,)
+
+    # Passo 1: Identificar candidatas e travar critérios únicos
+    itens_resolvidos = []
+    for item in dados_filtrados:
+        criterio_json = normalizar(item["criterio"])
+        candidatas = []
+        for r in criterios_linhas:
+            if r - 1 < len(valores_col):
+                val_planilha = valores_col[r - 1]
+                txt_planilha = val_planilha[0] if isinstance(val_planilha, (list, tuple)) else val_planilha
+                txt_planilha_norm = normalizar(txt_planilha)
+                if criterio_json and (criterio_json in txt_planilha_norm or txt_planilha_norm in criterio_json):
+                    candidatas.append(r)
+        
+        itens_resolvidos.append({
+            "item": item,
+            "candidatas": candidatas,
+            "linha_final": candidatas[0] if len(candidatas) == 1 else None
+        })
+
+    # Passo 2: Resolver duplicados usando o vizinho resolvido mais próximo
+    for idx, info in enumerate(itens_resolvidos):
+        if info["linha_final"] is not None or not info["candidatas"]:
+            continue
+        
+        vizinho_linha = None
+        distancia_minima = float('inf')
+        
+        for i_viz, viz_info in enumerate(itens_resolvidos):
+            if i_viz == idx:
+                continue
+            if viz_info["linha_final"] is not None:
+                dist = abs(i_viz - idx)
+                if dist < distancia_minima:
+                    distancia_minima = dist
+                    vizinho_linha = viz_info["linha_final"]
+        
+        if vizinho_linha is not None:
+            info["linha_final"] = min(info["candidatas"], key=lambda r: abs(r - vizinho_linha))
+        else:
+            info["linha_final"] = info["candidatas"][0]
+
+    # Passo 3: Preencher no Excel
+    for info in itens_resolvidos:
+        linha = info["linha_final"]
+        item = info["item"]
         criterio = item["criterio"]
         nivel_texto = item.get("nivel", "")
 
-        # Extrai o número do grau (1–5) a partir do campo nivel
-        numero_grau = extrair_numero_grau(nivel_texto)
-
-        if numero_grau is None:
-            # "Nenhum nível marcado" ou grau não reconhecível → ignora critério
-            print(f"[IGNORADO] {criterio} → grau inválido ou ausente: '{nivel_texto}'")
-            continue
-
-        try:
-            pontuacao_interna = obter_pontuacao_interna(autonomia_norm, numero_grau)
-            coluna_destino = obter_coluna_excel_por_pontuacao(pontuacao_interna)
-        except ValueError as e:
-            print(f"[ERRO PONTUAÇÃO] {criterio} → {e}")
-            continue
-
-        linha = encontrar_linha_por_criterio(
-            sheet,
-            criterio,
-            coluna_criterio=COLUNA_CRITERIO,
-            linha_inicial=LINHA_INICIAL_BUSCA,
-            linha_final=linha_final
-        )
-
-        if linha is None:
+        if not linha:
             nao_encontrados.append(criterio)
             print(f"[NÃO ENCONTRADO] {criterio}")
             continue
 
-        limpar_faixa(sheet, linha)
-        sheet.Cells(linha, coluna_destino).Value = "✓"
+        # Extrai o número do grau (1–5) a partir do campo nivel
+        numero_grau = extrair_numero_grau(nivel_texto)
+        low_nivel = normalizar(nivel_texto)
+        is_nao_atingiu = "não atingiu" in low_nivel or "nao atingiu" in low_nivel
+
+        if numero_grau is None and not is_nao_atingiu:
+            print(f"[IGNORADO] {criterio} na linha {linha} → grau inválido ou ausente: '{nivel_texto}'")
+            continue
+
+        try:
+            if is_nao_atingiu:
+                pontuacao_interna = 1
+            else:
+                pontuacao_interna = obter_pontuacao_interna(autonomia_norm, numero_grau)
+            coluna_destino = obter_coluna_excel_por_pontuacao(pontuacao_interna)
+        except ValueError as e:
+            print(f"[ERRO PONTUAÇÃO] {criterio} na linha {linha} → {e}")
+            continue
+
+        escrever_celula_com_retry(sheet, linha, coluna_destino, "✓")
 
         criterios_preenchidos.append({
             "linha": linha,
@@ -110,7 +162,7 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida):
         })
 
         preenchidos += 1
-        print(f"[OK] {criterio} → autonomia={autonomia_norm}, grau=G{numero_grau}, pontuação={pontuacao_interna}")
+        print(f"[OK] {criterio} → autonomia={autonomia_norm}, grau=G{numero_grau}, pontuação={pontuacao_interna} na linha {linha}")
 
     return criterios_preenchidos, preenchidos, nao_encontrados
 
@@ -163,11 +215,17 @@ def rodar_preenchimento_com_respostas(respostas_autonomia, should_stop_callback=
 
         alunos_localizados += 1
 
+        # Limpa marcações incorretas de execuções passadas
+        # limpar_marcacoes_invalidas(sheet)
+
+        # Obtém estrutura e capacidades mapeadas
+        _, capacidades_blocos = mapear_estrutura_planilha(sheet)
+
         criterios_preenchidos, preenchidos, nao_encontrados = preencher_criterios_automatico(
-            sheet, rubrica, autonomia_fornecida
+            sheet, rubrica, autonomia_fornecida, capacidades_blocos
         )
 
-        preencher_capacidades(sheet, criterios_preenchidos)
+        preencher_capacidades(sheet, capacidades_blocos)
 
         total_preenchidos += preenchidos
         total_nao_encontrados.extend([f"{nome_aluno}: {c}" for c in nao_encontrados])
