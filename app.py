@@ -18,7 +18,6 @@ from preencher_planilha import (
     COL_INICIO_AVALIACAO,
     COL_FIM_AVALIACAO,
     encontrar_linha_por_criterio,
-    identificar_blocos_capacidade,
     arredondar_media_para_int,
     median,
     encontrar_planilha_do_aluno,
