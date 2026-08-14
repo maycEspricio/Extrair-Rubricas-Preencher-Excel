@@ -72,31 +72,36 @@ def start_extract():
     if is_processing:
         return jsonify({"error": "Já existe um processo em execução"}), 400
 
+    # Lê a URL opcional enviada pelo frontend
+    data = request.json or {}
+    url = data.get("url", "").strip()
+
     is_processing = True
     stop_requested = False
     confirm_event.clear()
 
     def confirmar():
-        log_queue.put("\\n[SISTEMA] Navegador aberto. Acesse a atividade com a tabela de alunos e clique em 'Confirmar Página' na interface...\\n")
+        log_queue.put("\n[SISTEMA] Navegador aberto. Acesse a atividade com a tabela de alunos e clique em 'Confirmar Página' na interface...\n")
         confirm_event.wait()
         return not stop_requested
 
-    def runner():
+    def runner(classroom_url):
         global is_processing
         redirecionador = LogRedirector()
         try:
             with redirect_stdout(redirecionador), redirect_stderr(redirecionador):
                 extrair_rubricas_todos_alunos(
+                    url=classroom_url,
                     confirmar_inicio_callback=confirmar,
                     should_stop_callback=should_stop
                 )
         except Exception as e:
-            log_queue.put(f"\\n[ERRO] {str(e)}\\n")
+            log_queue.put(f"\n[ERRO] {str(e)}\n")
         finally:
             is_processing = False
             confirm_event.set() # Unblock if stuck
 
-    threading.Thread(target=runner, daemon=True).start()
+    threading.Thread(target=runner, args=(url,), daemon=True).start()
     return jsonify({"status": "started"})
 
 @app.route('/api/extrair/confirmar', methods=['POST'])
