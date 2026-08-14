@@ -5,6 +5,7 @@
 # Biblioteca padrão para leitura do arquivo JSON gerado na etapa anterior.
 # Esse JSON contém a rubrica extraída do Google Classroom.
 import json
+import re
 
 # Biblioteca padrão usada aqui para arredondamento da mediana das capacidades.
 # O uso de math.floor(mediana + 0.5) implementa o arredondamento "tradicional":
@@ -114,14 +115,17 @@ def normalizar(texto):
     - remove espaços duplicados entre palavras
     - remove espaços no início e no fim
     - converte tudo para minúsculas
+    - remove "expandir critério" e "expandir criterio" de forma resiliente
 
     Exemplo:
-        "  Parcialmente   Autônomo  " -> "parcialmente autônomo"
+    "Expandir critério Parcialmente Autônomo" -> "parcialmente autônomo"
 
     Isso ajuda porque, sem normalização, textos visualmente iguais
     podem falhar numa comparação simples.
     """
-    return " ".join(str(texto or "").split()).strip().lower()
+    txt = " ".join(str(texto or "").split()).strip().lower()
+    txt = re.sub(r'expandir\s+crit[eé]rio', '', txt)
+    return " ".join(txt.split()).strip()
 
 
 def carregar_rubricas(nome_arquivo="rubricas.json"):
@@ -228,6 +232,16 @@ def escolher_planilha(workbook, nome_aba=None):
 # =========================
 # BUSCA DE LINHAS E LIMPEZA DE FAIXAS
 # =========================
+
+def limpar_linha_faixa(sheet, linha):
+    """
+    Limpa qualquer marcação existente nas colunas de notas (H a AA, colunas 8 a 27) para uma determinada linha.
+    Evita que o aluno fique com múltiplas notas na mesma linha de critério ou capacidade.
+    """
+    try:
+        sheet.Range(sheet.Cells(linha, 8), sheet.Cells(linha, 27)).Value = ""
+    except Exception as e:
+        print(f"[ERRO LIMPEZA] Falha ao limpar faixa da linha {linha}: {e}")
 
 def encontrar_linha_por_criterio(sheet, criterio, coluna_criterio=COLUNA_CRITERIO, linha_inicial=1, linha_final=None, col_values=None):
     criterio_norm = normalizar(criterio)
@@ -610,7 +624,8 @@ def preencher_criterios(sheet, dados, respostas_subnivel_aluno, capacidades_bloc
             print(f"[IGNORADO] {criterio} na linha {linha} -> {e}")
             continue
 
-        # Escreve a nova marcação diretamente na célula sem limpar a faixa
+        # Limpa marcações anteriores na faixa de colunas antes de escrever a nova
+        limpar_linha_faixa(sheet, linha)
         escrever_celula_com_retry(sheet, linha, coluna_destino, "✓")
 
         criterios_preenchidos.append({
@@ -689,6 +704,8 @@ def preencher_capacidades(sheet, capacidades_blocos):
         mediana_final = arredondar_media_para_int(mediana)
         coluna = obter_coluna_excel_por_pontuacao(mediana_final)
 
+        # Limpa marcações anteriores na faixa de colunas para a capacidade
+        limpar_linha_faixa(sheet, bloco["linha_capacidade"])
         escrever_celula_com_retry(sheet, bloco["linha_capacidade"], coluna, "X")
 
         print(f"[CAPACIDADE] {bloco['texto_capacidade']} -> mediana={mediana_final} marcada com 'X' na coluna {coluna}")
