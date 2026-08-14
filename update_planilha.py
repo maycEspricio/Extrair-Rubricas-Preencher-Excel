@@ -37,6 +37,7 @@ from preencher_planilha import (
     limpar_marcacoes_invalidas,
     mapear_estrutura_planilha,
     escrever_celula_com_retry,
+    limpar_linha_faixa,
 )
 
 
@@ -151,6 +152,8 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidade
             print(f"[ERRO PONTUAÇÃO] {criterio} na linha {linha} → {e}")
             continue
 
+        # Limpa qualquer marcação anterior nas colunas de nota do critério
+        limpar_linha_faixa(sheet, linha)
         escrever_celula_com_retry(sheet, linha, coluna_destino, "✓")
 
         criterios_preenchidos.append({
