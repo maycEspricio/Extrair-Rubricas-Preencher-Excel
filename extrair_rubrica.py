@@ -64,31 +64,60 @@ def iniciar_driver():
 def coletar_alunos_da_tabela(driver):
     """
     Lê a tabela de estudantes e retorna uma lista com nome e link
-    de cada aluno.
+    de cada aluno, classificando-os por status (bucket) e priorizando os devolvidos.
     """
     alunos = []
 
-    # pega apenas linhas que realmente representam aluno
-    linhas = driver.find_elements(By.CSS_SELECTOR, 'tr[data-student-id]')
-
-    print(f"Alunos encontrados na tabela: {len(linhas)}")
+    # Encontra todas as linhas de cabeçalho e de alunos na tabela ordenadamente
+    linhas = driver.find_elements(By.CSS_SELECTOR, 'tr.tYQn5c, tr.DC55n, tr[data-bucket], tr[data-student-id]')
+    
+    print(f"Linhas totais na tabela de alunos: {len(linhas)}")
+    current_bucket = "unknown"
 
     for linha in linhas:
         try:
-            link = linha.find_element(By.CSS_SELECTOR, 'td.TAjiIf a[href*="/student/"]')
-            nome = linha.find_element(By.CSS_SELECTOR, 'span.YVvGBb').text.strip()
-            href = link.get_attribute("href")
+            classes = linha.get_attribute("class") or ""
+            bucket_attr = linha.get_attribute("data-bucket")
+            
+            # Se for uma linha de cabeçalho (atribuído, entregue, devolvido, etc.)
+            if "tYQn5c" in classes or bucket_attr:
+                current_bucket = bucket_attr or current_bucket
+                continue
+            
+            # Se for uma linha de aluno
+            if "DC55n" in classes or linha.get_attribute("data-student-id"):
+                link = linha.find_element(By.CSS_SELECTOR, 'td.TAjiIf a[href*="/student/"]')
+                nome = linha.find_element(By.CSS_SELECTOR, 'span.YVvGBb').text.strip()
+                href = link.get_attribute("href")
 
-            if nome and href:
-                alunos.append({
-                    "nome": nome,
-                    "href": href
-                })
-
+                if nome and href:
+                    alunos.append({
+                        "nome": nome,
+                        "href": href,
+                        "bucket": current_bucket
+                    })
         except Exception as e:
-            print(f"Não consegui ler uma linha da tabela: {e}")
+            # Silenciosamente tenta a próxima linha
+            pass
 
-    return alunos
+    print(f"Alunos mapeados no total: {len(alunos)}")
+    
+    # Define a ordenação: "returned" (devolvido) primeiro, depois outros, "not-done" (atribuído/não feito) por último
+    def obter_prioridade(aluno):
+        b = aluno.get("bucket", "unknown")
+        if b == "returned":
+            return 0
+        elif b == "graded":
+            return 1
+        elif b == "not-done":
+            return 3
+        return 2
+
+    alunos.sort(key=obter_prioridade)
+    # Filtra para manter apenas os alunos dos blocos "Atividades devolvidas" (returned) e "Com nota" (graded)
+    alunos_filtrados = [a for a in alunos if a.get("bucket") in ("returned", "graded")]
+    print(f"Alunos filtrados (apenas devolvidos/com nota): {len(alunos_filtrados)} de {len(alunos)} no total.")
+    return alunos_filtrados
 
 def esperar_rubrica_carregar(driver, timeout=20):
     """
@@ -213,20 +242,70 @@ def extrair_rubrica_do_aluno(driver, nome_aluno, href, force_navigation=False):
             "observacao": "Critérios da rubrica não encontrados."
         }
 
+    # Rolagem incremental do painel de notas (barra lateral direita que contém a rubrica)
+    try:
+        # Encontra o container interno com overflow do Classroom que realmente rola na direita
+        container_found = driver.execute_script("""
+            const crit = document.querySelector('[data-criterion-id]');
+            if (!crit) return null;
+            let parent = crit.parentElement;
+            while (parent && parent !== document.body) {
+                const style = window.getComputedStyle(parent);
+                const overflow = style.overflow + style.overflowY;
+                if (parent.scrollHeight > parent.clientHeight && (overflow.includes('auto') || overflow.includes('scroll'))) {
+                    parent.classList.add('selenium-scroll-container');
+                    return true;
+                }
+                parent = parent.parentElement;
+            }
+            return false;
+        """)
+
+        if container_found:
+            altura_total = driver.execute_script("return document.querySelector('.selenium-scroll-container').scrollHeight")
+            posicao_atual = 0
+            passo = 250
+            while posicao_atual < altura_total:
+                posicao_atual += passo
+                driver.execute_script(f"document.querySelector('.selenium-scroll-container').scrollTop = {posicao_atual};")
+                time.sleep(0.15)
+                altura_total = driver.execute_script("return document.querySelector('.selenium-scroll-container').scrollHeight")
+            
+            driver.execute_script("document.querySelector('.selenium-scroll-container').scrollTop = 0;")
+            time.sleep(0.3)
+            print("Rolagem incremental da barra lateral de notas concluída.")
+        else:
+            # Fallback scroll básico se não achar o container específico
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(0.3)
+            driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(0.3)
+    except Exception as e:
+        print(f"Aviso: Falha na rolagem do painel de critérios: {e}")
+
     # Clica em todos os botões/cabeçalhos de critério que estão colapsados (aria-expanded="false")
+    # Nota: Usamos apenas seletores explícitos com aria-expanded="false" para garantir que NUNCA 
+    # cliquemos nas opções de nota/níveis (que são botões comuns ou radio buttons) e evitamos alterar avaliações.
     try:
         driver.execute_script("""
-            const botoes = Array.from(document.querySelectorAll('[data-criterion-id] [aria-expanded="false"], [data-criterion-id][aria-expanded="false"], [aria-controls][aria-expanded="false"]'));
-            botoes.forEach(b => {
-                try {
-                    b.click();
-                } catch(e) {
-                    console.error("Erro ao expandir critério:", e);
+            // Filtra para pegar apenas os blocos que estão visíveis na tela (do aluno ativo)
+            const blocos = Array.from(document.querySelectorAll('[data-criterion-id]'))
+                                .filter(el => el.offsetHeight > 0);
+            blocos.forEach(bloco => {
+                // Para segurança absoluta, selecionamos apenas elementos 'button' que controlam painéis (aria-controls)
+                // e estão fechados (aria-expanded="false"). Botões de atribuição de nota não possuem essas duas propriedades juntas.
+                const btn = bloco.querySelector('button[aria-expanded="false"][aria-controls]');
+                if (btn) {
+                    try {
+                        btn.click();
+                    } catch(e) {
+                        console.error("Erro ao expandir critério:", e);
+                    }
                 }
             });
         """)
-        print("Critérios colapsados expandidos programaticamente.")
-        time.sleep(1)
+        print("Critérios colapsados expandidos programaticamente de forma segura (um clique por critério).")
+        time.sleep(0.8)
     except Exception as e:
         print(f"Erro ao tentar expandir os critérios: {e}")
 
@@ -236,19 +315,26 @@ def extrair_rubrica_do_aluno(driver, nome_aluno, href, force_navigation=False):
     except Exception as e:
         print(f"Opções de nível não carregaram após expansão: {e}")
 
-    # scroll leve para incentivar renderização de todos os elementos e carregamento de estados
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.4);")
-    time.sleep(0.5)
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(0.5)
+    # Outra rolagem rápida no container de rolagem após expandir para carregar dados virtuais
+    try:
+        driver.execute_script("""
+            const sc = document.querySelector('.selenium-scroll-container');
+            if (sc) {
+                sc.scrollTop = sc.scrollHeight * 0.5;
+                setTimeout(() => { sc.scrollTop = 0; }, 150);
+            }
+        """)
+        time.sleep(0.3)
+    except Exception as e:
+        pass
 
     # Espera inteligente para ver se alguma opção está marcada (comportamento assíncrono do Classroom ao carregar nota)
     try:
-        wait_marcado = WebDriverWait(driver, 6)
+        wait_marcado = WebDriverWait(driver, 2)
         wait_marcado.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '[role="menuitemradio"][aria-checked="true"], [role="menuitemradio"].KKjvXb')) > 0)
         print("Opção marcada encontrada/carregada com sucesso!")
     except Exception:
-        print("Nenhuma opção marcada carregada após 6 segundos (aluno pode não ter sido avaliado ainda).")
+        print("Nenhuma opção marcada carregada após 2 segundos (aluno pode não ter sido avaliado ainda).")
 
     html = driver.page_source
 
@@ -273,53 +359,63 @@ def copiar_rubrica(driver):
         const resultado = [];
         const vistos = new Set();
 
-        const blocos = Array.from(document.querySelectorAll('[data-criterion-id]')).filter(el => el.offsetHeight > 0);
+        // Filtramos para pegar apenas blocos visíveis na tela (do aluno ativo)
+        // Evita ler elementos de alunos anteriores que continuam ocultos no DOM do Classroom
+        const blocos = Array.from(document.querySelectorAll('[data-criterion-id]'))
+                            .filter(el => el.offsetHeight > 0);
 
         for (const bloco of blocos) {
             const criterionId = (bloco.getAttribute('data-criterion-id') || '').trim();
             if (!criterionId || vistos.has(criterionId)) continue;
 
             // Busca o título do critério de forma resiliente
-            let criterio = 'Critério não encontrado';
-            const cabecalho = bloco.querySelector('h2, h3, h4, [role="heading"], .K0lUWd');
-            if (cabecalho) {
-                criterio = (cabecalho.innerText || cabecalho.textContent || '').replace(/\\s+/g, ' ').trim();
-            } else {
-                // Fallback: pega o primeiro texto curto no topo do bloco
-                const primeiroTexto = Array.from(bloco.querySelectorAll('div, span'))
+            let criterio = '';
+            
+            // Prioridade 1: Tenta obter o span específico que contém o texto principal no Classroom (jsname="V67aGc")
+            const tituloEl = bloco.querySelector('span[jsname="V67aGc"], .mUIrbf-vQzf8d');
+            if (tituloEl) {
+                criterio = (tituloEl.innerText || tituloEl.textContent || '').replace(/\\s+/g, ' ').trim();
+            }
+
+            // Prioridade 2: Tenta cabeçalho h2, h3, h4 ou similar
+            if (!criterio) {
+                const cabecalho = bloco.querySelector('h2, h3, h4, [role="heading"], .K0lUWd');
+                if (cabecalho && !cabecalho.innerText.toLowerCase().includes('rubrica')) {
+                    criterio = (cabecalho.innerText || cabecalho.textContent || '').replace(/\\s+/g, ' ').trim();
+                }
+            }
+
+            // Fallback: pega o primeiro texto válido, ignorando tooltips e botões com a frase "Expandir critério"
+            if (!criterio) {
+                const primeiroTexto = Array.from(bloco.querySelectorAll('div, span, button'))
+                    .filter(el => !el.matches('[role="tooltip"], .ne2Ple-oshW8e-V67aGc, [aria-label*="Expandir"]'))
                     .map(el => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim())
-                    .find(t => t.length > 0 && t.length < 100);
+                    .find(t => t.length > 0 && t.toLowerCase() !== 'expandir critério' && t.toLowerCase() !== 'expandir criterio');
                 if (primeiroTexto) {
                     criterio = primeiroTexto;
+                } else {
+                    criterio = 'Critério não encontrado';
                 }
             }
 
             let nivel = 'Nenhum nível marcado';
             let opcoes = [];
             
-            // 1. Tenta achar via aria-controls (apenas visíveis)
-            const botaoControlador = bloco.querySelector('[aria-controls]') || 
-                                     (bloco.getAttribute('aria-controls') ? bloco : null);
-            if (botaoControlador) {
-                const panelId = botaoControlador.getAttribute('aria-controls');
-                const painel = document.getElementById(panelId);
-                if (painel) {
-                    opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"], [role="radio"], [role="button"], [aria-checked]'))
-                                  .filter(el => el.offsetHeight > 0);
-                }
-            }
+            // 1. Busca opções diretamente dentro do próprio bloco do critério (escopo restrito ao critério)
+            opcoes = Array.from(bloco.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
+                          .filter(el => el.offsetHeight > 0);
             
-            // 2. Se não achar, procura subindo a árvore DOM até encontrar um container com opções (apenas visíveis)
+            // 2. Fallback: Tenta achar via aria-controls se não encontrou dentro do bloco
             if (opcoes.length === 0) {
-                let container = bloco.parentElement;
-                while (container && container.tagName !== 'BODY') {
-                    const ops = Array.from(container.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
-                                     .filter(el => el.offsetHeight > 0);
-                    if (ops.length > 0) {
-                        opcoes = ops;
-                        break;
+                const botaoControlador = bloco.querySelector('[aria-controls]') || 
+                                         (bloco.getAttribute('aria-controls') ? bloco : null);
+                if (botaoControlador) {
+                    const panelId = botaoControlador.getAttribute('aria-controls');
+                    const painel = document.getElementById(panelId);
+                    if (painel) {
+                        opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
+                                      .filter(el => el.offsetHeight > 0);
                     }
-                    container = container.parentElement;
                 }
             }
 
@@ -376,20 +472,34 @@ def copiar_rubrica(driver):
 
     print(f"Critérios válidos extraídos: {len(dados)}")
     for i, item in enumerate(dados, start=1):
-        print(f"Critério {i}: {item['criterio']} => {item['nivel']}")
-        print(f"  Diagnóstico de opções do Critério {i}:")
+        opcoes_formatadas = []
         for op in item.get('opcoes_debug', []):
             is_marcada = op['atributos'].get('aria-checked') == 'true' or op['atributos'].get('aria-selected') == 'true' or 'KKjvXb' in op['classes']
-            marcador = " [MARCADA]" if is_marcada else ""
-            print(f"    - Nível: '{op['texto']}' | Classes: '{op['classes']}' | Atributos: {op['atributos']}{marcador}")
-            print(f"      HTML Completo da Opção: {op['html']}")
+            marcador = " (MARCADA)" if is_marcada else ""
+            opcoes_formatadas.append(f"'{op['texto']}'{marcador}")
+        
+        print(f"Critério {i}: {item['criterio']} => {item['nivel']}")
+        print(f"  Níveis lidos: [{', '.join(opcoes_formatadas)}]")
 
-    # Remove o campo debug antes de retornar para não poluir o JSON final
+    # Remove o campo debug antes de retornar para não poluir o JSON final, limpa o texto do critério e filtra vazios
+    import re
+    dados_limpos = []
     for item in dados:
         if 'opcoes_debug' in item:
             del item['opcoes_debug']
+        
+        criterio_original = item.get("criterio", "")
+        # Remove "Expandir critério" / "Expandir criterio" case-insensitively
+        criterio_limpo = re.sub(r'(?i)expandir\s+crit[eé]rio', '', criterio_original)
+        criterio_limpo = " ".join(criterio_limpo.split()).strip()
+        
+        if criterio_limpo and criterio_limpo.lower() != "critério não encontrado":
+            item["criterio"] = criterio_limpo
+            dados_limpos.append(item)
+        else:
+            print(f"[INFO] Removido item de controle ou vazio após limpeza: '{criterio_original}'")
 
-    return dados
+    return dados_limpos
 
 
 def salvar_resultados(dados, nome_arquivo="rubrica.json"):
@@ -472,16 +582,28 @@ def extrair_rubricas_todos_alunos(confirmar_inicio_callback=None, should_stop_ca
                         force_navigation=False
                     )
 
+                # Validação crítica das rubricas e níveis
+                rubrica_extraida = resultado.get("rubrica", [])
+                
+                # Se não há rubrica ou se houver critérios com nível inválido/vazio
+                niveis_invalidos = [
+                    item for item in rubrica_extraida
+                    if item.get("nivel") == "Nenhum nível marcado" or not item.get("nivel")
+                ]
+                
+                if not rubrica_extraida:
+                    raise ValueError("Nenhum critério foi extraído da página.")
+                
+                if niveis_invalidos:
+                    raise ValueError("Não foi encontrado nível (nota) preenchido para um ou mais critérios.")
+
                 resultados.append(resultado)
-                print(f"Rubrica extraída de: {aluno['nome']}")
+                print(f"Rubrica extraída com sucesso de: {aluno['nome']}")
 
             except Exception as e:
-                print(f"Erro ao extrair rubrica de {aluno['nome']}: {e}")
-                resultados.append({
-                    "aluno": aluno["nome"],
-                    "link": aluno["href"],
-                    "erro": str(e)
-                })
+                # Evidencia o erro e interrompe a automação na hora
+                print(f"\n[ERRO CRÍTICO] Falha na extração do aluno {aluno['nome']}: {e}")
+                raise e
 
         # mostra no terminal
         print("\nRESULTADO FINAL:\n")
