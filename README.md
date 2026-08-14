@@ -1,6 +1,6 @@
-# 🎓 Automação de Rubricas — Google Classroom → Excel
+# 🎓 Automação de Rubricas — Google Classroom → Excel (Monorepo)
 
-Ferramenta de automação que **extrai rubricas do Google Classroom** e **preenche automaticamente planilhas Excel**, eliminando o trabalho manual de copiar avaliações critério a critério.
+Ferramenta de automação que **extrai rubricas do Google Classroom** (inclusive em segundo plano) e **preenche automaticamente planilhas Excel**, eliminando o trabalho manual de copiar avaliações critério a critério.
 
 ---
 
@@ -8,8 +8,7 @@ Ferramenta de automação que **extrai rubricas do Google Classroom** e **preenc
 
 O fluxo de trabalho é dividido em duas etapas:
 
-1. **Extração** — O sistema abre o Chrome com um perfil de usuário já logado no Google Classroom, navega pela tabela de alunos e captura os critérios e graus avaliados (G1–G5) de cada rubrica, salvando tudo em `rubricas.json`.
-
+1. **Extração** — O sistema abre o Chrome de forma invisível (modo oculto / headless) ou visível. Ele navega pela tabela de alunos e captura os critérios e graus avaliados (G1–G5) de cada rubrica, salvando tudo em `rubricas.json` na raiz do projeto.
 2. **Preenchimento** — O professor informa a **autonomia** (Autônomo / Parcialmente autônomo / Apoiado / Não satisfatório) de cada aluno. O sistema então combina a **autonomia** (faixa de pontuação) com o **grau** (G1–G5, subnível) para calcular a pontuação interna (1–20) e marca a célula correspondente na planilha Excel aberta.
 
 ### Mapeamento de pontuação
@@ -25,21 +24,25 @@ O grau (G1–G5) define o subnível dentro da faixa: G1 → posição 1, G2 → 
 
 ---
 
-## 🏗️ Arquitetura
+## 🏗️ Arquitetura do Monorepo
+
+O projeto está organizado em uma arquitetura monorepo limpa:
 
 ```
-py copia rubricas/
-├── app.py                  # Servidor Flask (API REST)
-├── extrair_rubrica.py      # Selenium: extrai rubricas do Classroom
-├── preencher_planilha.py   # Lógica de pontuação + automação Excel (win32com)
-├── update_planilha.py      # Orquestrador do preenchimento com autonomia do professor
-├── requirements.txt        # Dependências Python
-├── rubricas.json           # ⚠️ Gerado em tempo de execução (não versionado)
-└── frontend/               # Interface React + Vite + TailwindCSS
+Extrair-Rubricas-Preencher-Excel/ (raiz)
+├── package.json            # Scripts de automação unificados do monorepo
+├── rubricas.json           # ⚠️ Gerado em tempo de execução (dados de rubricas extraídos)
+├── backend/                # Servidor Backend Python (Flask + Selenium + win32com)
+│   ├── app.py              # Ponto de entrada da API REST
+│   ├── extrair_rubrica.py  # Selenium: extrai rubricas do Classroom (headless/visível)
+│   ├── preencher_planilha.py # Lógica de pontuação + automação Excel (win32com)
+│   ├── update_planilha.py  # Orquestrador do preenchimento com autonomia do professor
+│   └── requirements.txt    # Dependências Python do backend
+└── frontend/               # Interface de usuário (Vite + React + TypeScript)
     ├── src/
-    │   ├── App.tsx          # Componente principal (UI completa)
+    │   ├── App.tsx         # Componente principal (UI unificada)
     │   └── main.tsx
-    ├── package.json
+    ├── package.json        # Dependências e scripts do frontend
     └── vite.config.ts
 ```
 
@@ -59,176 +62,78 @@ py copia rubricas/
 
 ## 🚀 Instalação e Configuração
 
-### 1. Clone o repositório
+Graças aos scripts unificados do Monorepo, você pode configurar tudo com poucos comandos a partir da raiz:
 
+### 1. Instalar dependências (Monorepo Setup)
+Execute na raiz do projeto:
 ```bash
-git clone <url-do-repositorio>
-cd "py copia rubricas"
+# Instala as dependências do React (frontend) e do Python (backend) automaticamente
+npm run setup
 ```
 
-### 2. Backend Python
-
+### 2. Configurar o perfil do Chrome para o Selenium
+O Selenium reutiliza um perfil do Chrome para evitar login manual a cada execução.
 ```bash
-# Crie e ative um ambiente virtual (recomendado)
-python -m venv .venv
-.venv\Scripts\activate
-
-# Instale as dependências
-pip install -r requirements.txt
-```
-
-### 3. Configurar o perfil do Chrome para o Selenium
-
-O Selenium reutiliza um perfil Chrome já logado no Google para evitar login manual a cada execução.
-
-```bash
-# Crie a pasta do perfil (se não existir)
+# Crie a pasta do perfil no seu sistema (se não existir)
 mkdir C:\selenium\chrome-profile
 ```
-
-Na primeira execução, abra o Chrome **manualmente** com este perfil e faça login na conta Google que tem acesso ao Classroom:
-
+Na primeira execução, abra o Chrome **manualmente** uma vez com este perfil e faça login na conta Google que tem acesso ao Classroom:
 ```bash
 chrome.exe --user-data-dir="C:\selenium\chrome-profile"
 ```
-
-> **Importante:** Feche o Chrome completamente antes de rodar a automação, pois o Selenium precisa controlar o processo.
-
-### 4. Frontend
-
-```bash
-cd frontend
-npm install
-```
+*(Certifique-se de fechar este navegador antes de iniciar as automações).*
 
 ---
 
 ## ▶️ Executando o projeto
 
-### Terminal 1 — Backend
+Inicie ambos os servidores (Frontend e Backend) com um único comando na raiz do projeto:
 
 ```bash
-# Na raiz do projeto
-python app.py
-```
-
-O servidor Flask inicia em `http://localhost:5000`.
-
-### Terminal 2 — Frontend
-
-```bash
-cd frontend
 npm run dev
 ```
 
-A interface abre em `http://localhost:5173`.
+* O **Frontend** iniciará em: `http://localhost:5173`
+* O **Backend** Flask iniciará em: `http://localhost:5000`
 
 ---
 
 ## 🖥️ Como usar
 
-### Passo 1 — Extrair Rubricas
+### Passo 1 — Extrair Rubricas (Classroom)
+Você pode escolher entre duas formas de extração na interface:
 
-1. Abra a interface em `http://localhost:5173`
-2. Clique em **"1. Extrair Rubricas"** — o Chrome abre automaticamente no Classroom
-3. Navegue até a atividade com a tabela de alunos
-4. Clique em **"Confirmar Página do Classroom"** na interface
-5. O sistema percorre cada aluno automaticamente e salva `rubricas.json`
+* **Modo Oculto (Recomendado):** 
+  1. Copie a URL da atividade do Classroom direto da barra de endereço do seu navegador.
+  2. Cole-a no campo **"URL da Atividade (Classroom)"** na interface da ferramenta.
+  3. Clique em **"1. Extrair Rubricas"**. O processo ocorrerá inteiramente em segundo plano sem abrir nenhuma janela na sua tela.
+  *(Caso você não esteja autenticado, o robô abrirá o navegador uma única vez para você logar e continuará o processo sozinho).*
+* **Modo Visível (Manual):**
+  1. Deixe o campo de URL em branco.
+  2. Clique em **"1. Extrair Rubricas"**. O navegador se abrirá fisicamente.
+  3. Navegue até a atividade desejada no Classroom e clique em **"Confirmar Página do Classroom"** no painel da ferramenta.
 
-### Passo 2 — Preencher Planilha
+O sistema processará os alunos que entregaram e salvará as informações em `rubricas.json` na raiz do projeto.
 
-1. Abra a planilha Excel e deixe-a **aberta e visível**
-2. Clique em **"2. Preencher Planilha"**
-3. Um modal exibe os alunos com graus avaliados — selecione a **autonomia** de cada um
-4. Clique em **"Confirmar e Preencher"**
-5. O sistema preenche a planilha e exibe o log no console
-
----
-
-## 📁 Estrutura da Planilha Excel Esperada
-
-A planilha deve seguir este layout:
-
-| Configuração | Valor |
-|---|---|
-| Coluna dos critérios/capacidades | **G (coluna 7)** |
-| Início da faixa de avaliação | **H (coluna 8)** — representa pontuação 1 |
-| Fim da faixa de avaliação | **AB (coluna 27)** — representa pontuação 20 |
-| Linha inicial de busca | **21** |
-| Nome do aluno | **M10** (linha 10, coluna 13) |
-
-Cada critério recebe um `✓` na coluna correspondente à pontuação. Cada capacidade recebe um `X` com base na mediana dos critérios do seu bloco.
+### Passo 2 — Preencher Planilha (Excel)
+1. Abra a planilha Excel no seu computador.
+2. Na ferramenta, clique em **"2. Preencher Planilha"**.
+3. O sistema detectará os alunos avaliados e solicitará que você defina a **autonomia** de cada um.
+4. Clique em **"Confirmar e Preencher"**. O robô fará uma varredura nas linhas, apagará marcações anteriores de notas/capacidades naquela linha para evitar duplicidade, e preencherá as novas notas.
 
 ---
 
-## 📡 API REST (Flask)
+## 🔧 Variáveis de configuração da Planilha
 
-| Método | Rota | Descrição |
-|---|---|---|
-| `GET` | `/api/status` | Verifica se há processo em execução |
-| `GET` | `/api/logs` | Retorna logs acumulados desde a última leitura |
-| `POST` | `/api/extrair` | Inicia a extração do Classroom |
-| `POST` | `/api/extrair/confirmar` | Confirma que a página do Classroom está pronta |
-| `GET` | `/api/preencher/check` | Lista alunos com graus válidos (precisam de autonomia) |
-| `POST` | `/api/preencher/execute` | Executa o preenchimento com as autonomias informadas |
-| `POST` | `/api/stop` | Solicita parada do processo em curso |
-
-### Exemplo — `/api/preencher/execute`
-
-```json
-POST /api/preencher/execute
-{
-  "autonomias": {
-    "João da Silva": "Autônomo",
-    "Maria Souza": "Apoiado"
-  }
-}
-```
-
----
-
-## 🔧 Variáveis de configuração
-
-Todas as constantes de layout da planilha estão centralizadas no topo de [`preencher_planilha.py`](preencher_planilha.py):
+As configurações de layout da planilha estão centralizadas no topo de `backend/preencher_planilha.py`:
 
 ```python
-COLUNA_CRITERIO      = 7   # Coluna G
-COL_INICIO_AVALIACAO = 8   # Coluna H (pontuação 1)
-COL_FIM_AVALIACAO    = 27  # Coluna AB (pontuação 20)
-LINHA_INICIAL_BUSCA  = 21  # Primeira linha pesquisável
-LINHA_NOME_ALUNO     = 10  # Linha do nome na aba
-COLUNA_NOME_ALUNO    = 13  # Coluna M
+COLUNA_CRITERIO      = 7   # Coluna G (Onde pesquisa o título dos critérios)
+COL_INICIO_AVALIACAO = 8   # Coluna H (Posição de nota 1)
+COL_FIM_AVALIACAO    = 27  # Coluna AA (Posição de nota 20)
+LINHA_INICIAL_BUSCA  = 21  # Primeira linha de busca na aba do aluno
+LINHA_NOME_ALUNO     = 10  # Linha onde fica o nome do aluno
+COLUNA_NOME_ALUNO    = 13  # Coluna M (Onde fica o nome do aluno)
 ```
 
-Se o layout da planilha mudar, ajuste apenas essas constantes.
-
----
-
-## ⚠️ Arquivos sensíveis / não versionados
-
-| Arquivo | Motivo |
-|---|---|
-| `rubricas.json` | Contém dados pessoais dos alunos — gerado em tempo de execução |
-| `*.json` (raiz) | Todos os JSONs da raiz são dados de execução |
-| `frontend/node_modules/` | Dependências — reinstale com `npm install` |
-| `.venv/` | Ambiente virtual Python |
-| `C:\selenium\chrome-profile` | Perfil Chrome com sessão logada — configurar localmente |
-
----
-
-## 🐛 Problemas comuns
-
-**`win32com` não encontrado**
-```bash
-pip install pywin32
-python -m pywin32_postinstall -install
-```
-
-**Chrome já aberto ao iniciar extração**
-> Feche todas as janelas do Chrome antes de rodar. O Selenium precisa controlar o processo do zero.
-
-**Aluno não encontrado na planilha**
-> Verifique se o nome na célula M10 da aba do aluno corresponde exatamente (ou parcialmente) ao nome retornado pelo Classroom.
-
-**Planilha não encontrada**
-> O Excel deve estar aberto com a planilha correta antes de clicar em "Preencher Planilha".
+Caso o design ou formato da planilha mude, basta atualizar estes valores.
