@@ -25,13 +25,13 @@ import time
 # Importa o módulo json para salvar os dados extraídos em arquivo .json
 import json
 
-def iniciar_driver():
+def iniciar_driver(headless=True):
     """
     Inicia o navegador Chrome com configurações personalizadas.
 
     O objetivo principal aqui é:
     - reutilizar um perfil já existente do Chrome
-    - abrir o navegador maximizado
+    - abrir o navegador oculto ou maximizado conforme parâmetro
     - ocultar a flag de automação para evitar bloqueios do Classroom
 
     Retorno:
@@ -44,8 +44,16 @@ def iniciar_driver():
     # Define o diretório do perfil de usuário do Chrome que será reutilizado.
     options.add_argument(r"--user-data-dir=C:\selenium\chrome-profile")
 
-    # Faz o navegador abrir maximizado para facilitar a visualização
-    options.add_argument("--start-maximized")
+    if headless:
+        # Configura o modo headless (oculto) para rodar em segundo plano sem abrir janela física
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+    else:
+        # Abre em modo visível e maximizado para permitir interação/login manual
+        options.add_argument("--start-maximized")
 
     # Oculta a automação do Selenium para evitar bloqueio do Classroom
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -519,22 +527,52 @@ def salvar_resultados(dados, nome_arquivo="rubrica.json"):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def extrair_rubricas_todos_alunos(confirmar_inicio_callback=None, should_stop_callback=None):
-    driver = iniciar_driver()
+def extrair_rubricas_todos_alunos(url=None, confirmar_inicio_callback=None, should_stop_callback=None):
+    # Se uma URL foi fornecida, tentamos rodar oculto (headless=True), caso contrário visível
+    headless_mode = True if url else False
+    driver = iniciar_driver(headless=headless_mode)
 
     try:
-        driver.get("https://classroom.google.com/")
-        if confirmar_inicio_callback is None:
-            input("Abra a página da atividade com a tabela de estudantes e pressione ENTER... ")
-        else:
-            # Quando usado por interface gráfica, a confirmação vem por callback
-            # (ex.: botão/caixa de diálogo), evitando travar em input().
-            deve_continuar = confirmar_inicio_callback()
-            if deve_continuar is False:
-                print("Processo interrompido pelo usuário antes da extração.")
-                return
+        if url:
+            print("Verificando status de autenticação no Google Classroom...")
+            driver.get("https://classroom.google.com/")
+            time.sleep(2.5)
 
-        time.sleep(2)
+            # Verifica se foi redirecionado para a tela de login do Google Accounts
+            if "accounts.google.com" in driver.current_url or "signin" in driver.current_url:
+                print("\n[AVISO] Você não está logado! Abrindo janela do navegador para você realizar o login...")
+                driver.quit()
+                
+                # Abre o navegador visível para o usuário interagir
+                driver = iniciar_driver(headless=False)
+                driver.get("https://classroom.google.com/")
+                
+                # Fica em loop monitorando a URL até que o usuário saia das páginas de login
+                while "accounts.google.com" in driver.current_url or "signin" in driver.current_url:
+                    time.sleep(1)
+                    if should_stop_callback is not None and should_stop_callback():
+                        print("Processo abortado durante a tela de login.")
+                        return
+                
+                print("[SISTEMA] Login detectado com sucesso! Prosseguindo para a extração...")
+                time.sleep(1.5)
+
+            print(f"Navegando diretamente para a URL da atividade: {url}")
+            driver.get(url)
+            print("Aguardando carregamento da tabela de estudantes (5 segundos)...")
+            time.sleep(5)
+        else:
+            driver.get("https://classroom.google.com/")
+            if confirmar_inicio_callback is None:
+                input("Abra a página da atividade com a tabela de estudantes e pressione ENTER... ")
+            else:
+                # Quando usado por interface gráfica, a confirmação vem por callback
+                # (ex.: botão/caixa de diálogo), evitando travar em input().
+                deve_continuar = confirmar_inicio_callback()
+                if deve_continuar is False:
+                    print("Processo interrompido pelo usuário antes da extração.")
+                    return
+                time.sleep(2)
 
         # coleta todos os alunos da tabela
         alunos = coletar_alunos_da_tabela(driver)
