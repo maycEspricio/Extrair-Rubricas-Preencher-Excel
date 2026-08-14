@@ -8,6 +8,8 @@ rubrica.json
 
 # Qualquer outro JSON gerado na raiz (logs, exports, etc.)
 *.json
+!package.json
+!package-lock.json
 
 # =========================
 # PYTHON
@@ -94,3 +96,5 @@ $RECYCLE.BIN/
 # Arquivos temporários
 *.tmp
 *.bak
+
+node_modules/
