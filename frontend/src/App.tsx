@@ -14,6 +14,7 @@ export default function App() {
   const [pendingStudents, setPendingStudents] = useState<PendingStudent[]>([]);
   const [autonomyAnswers, setAutonomyAnswers] = useState<Record<string, AutonomyLevel>>({});
   const [isWaitingClassroom, setIsWaitingClassroom] = useState(false);
+  const [classroomUrl, setClassroomUrl] = useState<string>('');
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   const fetchStatus = async () => {
@@ -31,7 +32,9 @@ export default function App() {
       const res = await fetch(`${API_BASE}/logs`);
       const data = await res.json();
       if (data.logs) {
-        setLogs((prev) => prev + data.logs);
+        // Corrige a formatação de \n vinda do backend Flask
+        const cleanLogs = data.logs.replace(/\\n/g, '\n');
+        setLogs((prev) => prev + cleanLogs);
       }
     } catch (e) {
       // Ignore
@@ -53,10 +56,18 @@ export default function App() {
   }, [logs]);
 
   const handleExtrair = async () => {
-    await fetch(`${API_BASE}/extrair`, { method: 'POST' });
-    setLogs((prev) => prev + '\\n[SISTEMA] Iniciando extração, abrindo o navegador...\\n');
+    await fetch(`${API_BASE}/extrair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: classroomUrl })
+    });
+    setLogs((prev) => prev + '\n[SISTEMA] Iniciando extração, abrindo o navegador...\n');
     setIsProcessing(true);
-    setIsWaitingClassroom(true);
+    if (!classroomUrl) {
+      setIsWaitingClassroom(true);
+    } else {
+      setIsWaitingClassroom(false);
+    }
   };
 
   const handleConfirmExtract = async () => {
@@ -105,7 +116,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-8 font-sans">
-      <div className="max-w-4xl mx-auto space-y-6">
+      <div className="max-w-5xl mx-auto space-y-6">
         <header className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-800">Automação de Rubricas</h1>
@@ -120,20 +131,33 @@ export default function App() {
           </div>
         </header>
 
-        <div className="grid md:grid-cols-3 gap-6">
-          <div className="md:col-span-1 space-y-4">
+        {/* Seção 1: Configuração da URL e Ações (Stack Horizontal) */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-slate-700 block">URL da Atividade (Classroom)</label>
+            <input
+              type="text"
+              placeholder="Cole a URL da atividade aqui..."
+              value={classroomUrl}
+              onChange={(e) => setClassroomUrl(e.target.value)}
+              className="w-full text-sm p-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-slate-800"
+            />
+            <span className="text-xs text-slate-400 block">Se informado, roda em 2º plano (oculto). Deixe vazio para manual/visível.</span>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
             {!isWaitingClassroom ? (
               <button
                 onClick={handleExtrair}
                 disabled={isProcessing}
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-xl transition-all shadow-sm active:scale-[0.98]"
+                className="flex-1 min-w-[150px] bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-all shadow-sm active:scale-[0.98]"
               >
                 1. Extrair Rubricas
               </button>
             ) : (
               <button
                 onClick={handleConfirmExtract}
-                className="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold py-4 px-6 rounded-xl transition-all shadow-sm active:scale-[0.98] animate-pulse"
+                className="flex-1 min-w-[200px] bg-amber-500 hover:bg-amber-600 text-white font-semibold py-3 px-6 rounded-xl transition-all shadow-sm active:scale-[0.98] animate-pulse"
               >
                 Confirmar Página do Classroom
               </button>
@@ -141,32 +165,33 @@ export default function App() {
             <button
               onClick={handlePreencher}
               disabled={isProcessing}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold py-4 px-6 rounded-xl transition-all shadow-sm active:scale-[0.98]"
+              className="flex-1 min-w-[150px] bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-all shadow-sm active:scale-[0.98]"
             >
               2. Preencher Planilha
             </button>
             <button
               onClick={handleStop}
               disabled={!isProcessing}
-              className="w-full bg-rose-100 hover:bg-rose-200 text-rose-700 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed font-semibold py-4 px-6 rounded-xl transition-all"
+              className="flex-1 min-w-[100px] bg-rose-100 hover:bg-rose-200 text-rose-700 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed font-semibold py-3 px-6 rounded-xl transition-all"
             >
-              Parar Processo
+              Parar
             </button>
           </div>
+        </div>
 
-          <div className="md:col-span-2 bg-slate-900 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[500px]">
-            <div className="bg-slate-800 px-4 py-3 border-b border-slate-700 flex items-center">
-              <div className="flex space-x-2">
-                <div className="w-3 h-3 rounded-full bg-rose-500"></div>
-                <div className="w-3 h-3 rounded-full bg-amber-500"></div>
-                <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
-              </div>
-              <span className="ml-4 text-xs font-mono text-slate-400">console output</span>
+        {/* Seção 2: Console Output em largura total */}
+        <div className="bg-slate-900 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[550px] w-full">
+          <div className="bg-slate-800 px-4 py-3 border-b border-slate-700 flex items-center">
+            <div className="flex space-x-2">
+              <div className="w-3 h-3 rounded-full bg-rose-500"></div>
+              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+              <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
             </div>
-            <div className="p-4 flex-1 overflow-y-auto font-mono text-sm text-emerald-400 whitespace-pre-wrap">
-              {logs || 'Aguardando inicialização...\\n'}
-              <div ref={logsEndRef} />
-            </div>
+            <span className="ml-4 text-xs font-mono text-slate-400">console output</span>
+          </div>
+          <div className="p-4 flex-1 overflow-y-auto font-mono text-sm text-emerald-400 whitespace-pre-wrap">
+            {logs || 'Aguardando inicialização...\n'}
+            <div ref={logsEndRef} />
           </div>
         </div>
       </div>
