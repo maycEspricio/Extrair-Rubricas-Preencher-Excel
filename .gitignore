@@ -4,6 +4,7 @@
 
 # Rubricas extraídas do Classroom — contêm dados pessoais dos alunos
 rubricas.json
+rubricas_test.json
 rubrica.json
 
 # Qualquer outro JSON gerado na raiz (logs, exports, etc.)

@@ -408,22 +408,44 @@ def copiar_rubrica(driver):
 
             let nivel = 'Nenhum nível marcado';
             let opcoes = [];
+            let capacidade = '';
             
             // 1. Busca opções diretamente dentro do próprio bloco do critério (escopo restrito ao critério)
             opcoes = Array.from(bloco.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
                           .filter(el => el.offsetHeight > 0);
             
-            // 2. Fallback: Tenta achar via aria-controls se não encontrou dentro do bloco
-            if (opcoes.length === 0) {
-                const botaoControlador = bloco.querySelector('[aria-controls]') || 
-                                         (bloco.getAttribute('aria-controls') ? bloco : null);
-                if (botaoControlador) {
-                    const panelId = botaoControlador.getAttribute('aria-controls');
-                    const painel = document.getElementById(panelId);
-                    if (painel) {
-                        opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
-                                      .filter(el => el.offsetHeight > 0);
+            // 2. Busca painel associado via aria-controls ou classe direta do painel expandido (.gXJ4Pb)
+            let painel = null;
+            const botaoControlador = bloco.querySelector('[aria-controls]') || 
+                                     (bloco.getAttribute('aria-controls') ? bloco : null);
+            if (botaoControlador) {
+                const panelId = botaoControlador.getAttribute('aria-controls');
+                if (panelId) {
+                    painel = document.getElementById(panelId);
+                }
+            }
+            if (!painel) {
+                painel = bloco.querySelector('.gXJ4Pb') || bloco.parentElement.querySelector('.gXJ4Pb');
+            }
+
+            if (painel) {
+                // Tenta extrair a descrição da capacidade (.UjXaMc ou primeiro texto descritivo antes dos radios)
+                const capEl = painel.querySelector('.UjXaMc, .FMzRdf');
+                if (capEl) {
+                    capacidade = (capEl.innerText || capEl.textContent || '').replace(/\\s+/g, ' ').trim();
+                } else {
+                    const primeiroDesc = painel.firstElementChild;
+                    if (primeiroDesc && !primeiroDesc.querySelector('[role="menuitemradio"]')) {
+                        const txt = (primeiroDesc.innerText || primeiroDesc.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (txt && !txt.toLowerCase().includes('não atingiu') && !txt.toLowerCase().startsWith('g')) {
+                            capacidade = txt;
+                        }
                     }
+                }
+
+                if (opcoes.length === 0) {
+                    opcoes = Array.from(painel.querySelectorAll('[role="menuitemradio"], [role="radio"], [aria-checked]'))
+                                  .filter(el => el.offsetHeight > 0);
                 }
             }
 
@@ -470,6 +492,7 @@ def copiar_rubrica(driver):
             resultado.push({
                 criterion_id: criterionId,
                 criterio: criterio,
+                capacidade: capacidade,
                 nivel: nivel,
                 opcoes_debug: opcoesDebug
             });
@@ -532,7 +555,7 @@ def salvar_resultados(dados, nome_arquivo="rubrica.json"):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def extrair_rubricas_todos_alunos(url=None, confirmar_inicio_callback=None, should_stop_callback=None):
+def extrair_rubricas_todos_alunos(url=None, confirmar_inicio_callback=None, should_stop_callback=None, arquivo_saida="rubricas.json"):
     # Se uma URL foi fornecida, tentamos rodar oculto (headless=True), caso contrário visível
     headless_mode = True if url else False
     driver = iniciar_driver(headless=headless_mode)
@@ -658,7 +681,7 @@ def extrair_rubricas_todos_alunos(url=None, confirmar_inicio_callback=None, shou
             else:
                 print(f"  Erro: {aluno.get('erro')}")
 
-        salvar_resultados(resultados, "rubricas.json")
+        salvar_resultados(resultados, arquivo_saida)
 
     finally:
         driver.quit()
