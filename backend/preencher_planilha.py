@@ -598,21 +598,105 @@ def preencher_criterios(sheet, dados, respostas_subnivel_aluno, capacidades_bloc
             continue
         dados_filtrados.append(item)
 
-    # Obtém todas as linhas de critérios físicas mapeadas na planilha
-    criterios_linhas, _ = mapear_estrutura_planilha(sheet)
+    # Obtém todas as linhas de critérios físicas e blocos mapeados na planilha
+    criterios_linhas, blocos_planilha = mapear_estrutura_planilha(sheet)
+    if capacidades_blocos is None:
+        capacidades_blocos = blocos_planilha
+
+    linha_final = obter_linha_final(sheet)
+    valores_col = sheet.Range(f"G1:G{linha_final}").Value
+    if valores_col and not isinstance(valores_col, (list, tuple)):
+        valores_col = (valores_col,)
+
+    def extrair_numero_cap(txt):
+        import re
+        if not txt:
+            return None
+        m = re.search(r'^\s*(\d+)', str(txt))
+        return int(m.group(1)) if m else None
+
+    mapa_blocos_por_num = {}
+    for bloco in capacidades_blocos:
+        num = extrair_numero_cap(bloco.get("texto_capacidade", ""))
+        if num is not None:
+            mapa_blocos_por_num[num] = bloco
+
+    itens_resolvidos = []
+    for item in dados_filtrados:
+        criterio_json = normalizar(item.get("criterio", ""))
+        cap_json = item.get("capacidade", "")
+        num_cap_json = extrair_numero_cap(cap_json)
+
+        linhas_escopo = criterios_linhas
+        if num_cap_json is not None and num_cap_json in mapa_blocos_por_num:
+            bloco_alvo = mapa_blocos_por_num[num_cap_json]
+            linhas_escopo = bloco_alvo.get("criterios", [])
+        elif cap_json:
+            cap_norm = normalizar(cap_json)
+            for bloco in capacidades_blocos:
+                bloco_txt_norm = normalizar(bloco.get("texto_capacidade", ""))
+                if cap_norm in bloco_txt_norm or bloco_txt_norm in cap_norm:
+                    linhas_escopo = bloco.get("criterios", [])
+                    break
+
+        candidatas = []
+        for r in linhas_escopo:
+            if r - 1 < len(valores_col):
+                val_planilha = valores_col[r - 1]
+                txt_planilha = val_planilha[0] if isinstance(val_planilha, (list, tuple)) else val_planilha
+                txt_planilha_norm = normalizar(txt_planilha)
+                if criterio_json and (criterio_json in txt_planilha_norm or txt_planilha_norm in criterio_json):
+                    candidatas.append(r)
+
+        if not candidatas and linhas_escopo != criterios_linhas:
+            for r in criterios_linhas:
+                if r - 1 < len(valores_col):
+                    val_planilha = valores_col[r - 1]
+                    txt_planilha = val_planilha[0] if isinstance(val_planilha, (list, tuple)) else val_planilha
+                    txt_planilha_norm = normalizar(txt_planilha)
+                    if criterio_json and (criterio_json in txt_planilha_norm or txt_planilha_norm in criterio_json):
+                        candidatas.append(r)
+        
+        itens_resolvidos.append({
+            "item": item,
+            "candidatas": candidatas,
+            "linha_final": candidatas[0] if len(candidatas) == 1 else None
+        })
+
+    for idx, info in enumerate(itens_resolvidos):
+        if info["linha_final"] is not None or not info["candidatas"]:
+            continue
+        
+        vizinho_linha = None
+        distancia_minima = float('inf')
+        for i_viz, viz_info in enumerate(itens_resolvidos):
+            if i_viz == idx:
+                continue
+            if viz_info["linha_final"] is not None:
+                dist = abs(i_viz - idx)
+                if dist < distancia_minima:
+                    distancia_minima = dist
+                    vizinho_linha = viz_info["linha_final"]
+        
+        if vizinho_linha is not None:
+            info["linha_final"] = min(info["candidatas"], key=lambda r: abs(r - vizinho_linha))
+        else:
+            info["linha_final"] = info["candidatas"][0]
 
     preenchidos = 0
     nao_encontrados = []
     criterios_preenchidos = []
 
-    for idx, item in enumerate(dados_filtrados):
-        if idx >= len(criterios_linhas):
-            print(f"[AVISO] Mais critérios no Classroom ({len(dados_filtrados)}) do que linhas na planilha ({len(criterios_linhas)}).")
-            break
-
-        linha = criterios_linhas[idx]
+    for info in itens_resolvidos:
+        linha = info["linha_final"]
+        item = info["item"]
         criterio = item["criterio"]
         nivel = normalizar(item["nivel"])
+
+        if not linha:
+            nao_encontrados.append(criterio)
+            print(f"[NÃO ENCONTRADO] {criterio}")
+            continue
 
         is_nao_atingiu = (nivel == "não atingiu")
 

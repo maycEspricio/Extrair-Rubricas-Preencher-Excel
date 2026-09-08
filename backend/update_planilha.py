@@ -71,8 +71,11 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidade
             continue
         dados_filtrados.append(item)
 
-    # Obtém todas as linhas de critérios físicas mapeadas na planilha
-    criterios_linhas, _ = mapear_estrutura_planilha(sheet)
+    # Obtém todas as linhas de critérios físicas e blocos de capacidades mapeados na planilha
+    criterios_linhas, blocos_planilha = mapear_estrutura_planilha(sheet)
+    if capacidades_blocos is None:
+        capacidades_blocos = blocos_planilha
+
     linha_final = obter_linha_final(sheet)
 
     # Lê toda a coluna G em lote
@@ -80,18 +83,58 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidade
     if valores_col and not isinstance(valores_col, (list, tuple)):
         valores_col = (valores_col,)
 
-    # Passo 1: Identificar candidatas e travar critérios únicos
+    def extrair_numero_cap(txt):
+        import re
+        if not txt:
+            return None
+        m = re.search(r'^\s*(\d+)', str(txt))
+        return int(m.group(1)) if m else None
+
+    # Mapeia blocos de capacidade por número ou texto
+    mapa_blocos_por_num = {}
+    for bloco in capacidades_blocos:
+        num = extrair_numero_cap(bloco.get("texto_capacidade", ""))
+        if num is not None:
+            mapa_blocos_por_num[num] = bloco
+
+    # Passo 1: Identificar linhas candidatas para cada critério (priorizando por capacidade)
     itens_resolvidos = []
     for item in dados_filtrados:
-        criterio_json = normalizar(item["criterio"])
+        criterio_json = normalizar(item.get("criterio", ""))
+        cap_json = item.get("capacidade", "")
+        num_cap_json = extrair_numero_cap(cap_json)
+
+        # Se identificou a capacidade no Classroom, restringe a busca ao bloco correspondente no Excel
+        linhas_escopo = criterios_linhas
+        if num_cap_json is not None and num_cap_json in mapa_blocos_por_num:
+            bloco_alvo = mapa_blocos_por_num[num_cap_json]
+            linhas_escopo = bloco_alvo.get("criterios", [])
+        elif cap_json:
+            cap_norm = normalizar(cap_json)
+            for bloco in capacidades_blocos:
+                bloco_txt_norm = normalizar(bloco.get("texto_capacidade", ""))
+                if cap_norm in bloco_txt_norm or bloco_txt_norm in cap_norm:
+                    linhas_escopo = bloco.get("criterios", [])
+                    break
+
         candidatas = []
-        for r in criterios_linhas:
+        for r in linhas_escopo:
             if r - 1 < len(valores_col):
                 val_planilha = valores_col[r - 1]
                 txt_planilha = val_planilha[0] if isinstance(val_planilha, (list, tuple)) else val_planilha
                 txt_planilha_norm = normalizar(txt_planilha)
                 if criterio_json and (criterio_json in txt_planilha_norm or txt_planilha_norm in criterio_json):
                     candidatas.append(r)
+
+        # Se não achou dentro do bloco específico (fallback), busca em todos os critérios
+        if not candidatas and linhas_escopo != criterios_linhas:
+            for r in criterios_linhas:
+                if r - 1 < len(valores_col):
+                    val_planilha = valores_col[r - 1]
+                    txt_planilha = val_planilha[0] if isinstance(val_planilha, (list, tuple)) else val_planilha
+                    txt_planilha_norm = normalizar(txt_planilha)
+                    if criterio_json and (criterio_json in txt_planilha_norm or txt_planilha_norm in criterio_json):
+                        candidatas.append(r)
         
         itens_resolvidos.append({
             "item": item,
@@ -99,7 +142,7 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidade
             "linha_final": candidatas[0] if len(candidatas) == 1 else None
         })
 
-    # Passo 2: Resolver duplicados usando o vizinho resolvido mais próximo
+    # Passo 2: Resolver duplicados usando o vizinho resolvido mais próximo (se ainda houver)
     for idx, info in enumerate(itens_resolvidos):
         if info["linha_final"] is not None or not info["candidatas"]:
             continue
@@ -126,11 +169,12 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidade
         linha = info["linha_final"]
         item = info["item"]
         criterio = item["criterio"]
+        cap_info = item.get("capacidade", "")
         nivel_texto = item.get("nivel", "")
 
         if not linha:
             nao_encontrados.append(criterio)
-            print(f"[NÃO ENCONTRADO] {criterio}")
+            print(f"[NÃO ENCONTRADO NA PLANILHA] Critério: '{criterio}' | Capacidade: '{cap_info}'")
             continue
 
         # Extrai o número do grau (1–5) a partir do campo nivel
@@ -170,15 +214,17 @@ def preencher_criterios_automatico(sheet, dados, autonomia_fornecida, capacidade
     return criterios_preenchidos, preenchidos, nao_encontrados
 
 
-def rodar_preenchimento_com_respostas(respostas_autonomia, should_stop_callback=None):
+def rodar_preenchimento_com_respostas(respostas_autonomia, should_stop_callback=None, arquivo_rubricas="rubricas.json"):
     """
     Orquestrador chamado pelo app.py quando o professor confirma as autonomias.
 
     Parâmetros:
         respostas_autonomia (dict): { "Nome do Aluno": "Autônomo", ... }
         should_stop_callback (callable | None): retorna True se o processo deve parar.
+        arquivo_rubricas (str): caminho do arquivo JSON a carregar.
     """
-    rubricas_alunos = carregar_rubricas("rubricas.json")
+    print(f"[SISTEMA] Carregando dados de rubricas a partir de: '{arquivo_rubricas}'")
+    rubricas_alunos = carregar_rubricas(arquivo_rubricas)
     excel = conectar_excel_aberto()
     workbook = excel.ActiveWorkbook
 

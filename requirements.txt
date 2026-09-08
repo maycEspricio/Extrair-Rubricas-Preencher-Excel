@@ -1,5 +1,0 @@
-flask
-flask-cors
-pywin32
-selenium
-beautifulsoup4
